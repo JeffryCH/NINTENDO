@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "Nintendo Inventory",
+    "slug": "nintendo-inventory",
+    "scheme": "nintendo",
+    "android": {
+      "package": "com.nintendo.inventory",
+      "versionCode": 1
+    },
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "plugins": ["expo-router"],
+    "assetBundlePatterns": ["**/*"],
+    "jsEngine": "hermes",
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
