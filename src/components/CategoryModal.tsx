@@ -1,60 +1,47 @@
 import { useEffect, useState } from "react";
 import {
+  KeyboardAvoidingView,
   Modal,
-  View,
-  Text,
-  TextInput,
+  Platform,
   Pressable,
   StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
-interface AddStoreModalProps {
+interface CategoryModalProps {
   visible: boolean;
+  mode: "create" | "edit";
   onClose: () => void;
-  onSubmit: (data: {
-    name: string;
-    location: string;
-    description?: string;
-    imageUrl?: string;
-  }) => Promise<void>;
-  mode?: "create" | "edit";
+  onSubmit: (data: { name: string; description?: string }) => Promise<void>;
   initialValues?: {
     name?: string;
-    location?: string;
     description?: string;
-    imageUrl?: string;
   };
 }
 
-export const AddStoreModal = ({
+export const CategoryModal = ({
   visible,
+  mode,
   onClose,
   onSubmit,
-  mode = "create",
   initialValues,
-}: AddStoreModalProps) => {
+}: CategoryModalProps) => {
   const [name, setName] = useState("");
-  const [location, setLocation] = useState("");
   const [description, setDescription] = useState("");
-  const [imageUrl, setImageUrl] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const isEdit = mode === "edit";
 
   const applyInitialValues = () => {
     if (isEdit && initialValues) {
       setName(initialValues.name ?? "");
-      setLocation(initialValues.location ?? "");
       setDescription(initialValues.description ?? "");
-      setImageUrl(initialValues.imageUrl ?? "");
     } else {
       setName("");
-      setLocation("");
       setDescription("");
-      setImageUrl("");
     }
     setError(null);
   };
@@ -72,8 +59,10 @@ export const AddStoreModal = ({
   };
 
   const handleSubmit = async () => {
-    if (!name.trim() || !location.trim()) {
-      setError("Nombre y ubicación son obligatorios.");
+    const trimmedName = name.trim();
+
+    if (!trimmedName) {
+      setError("El nombre es obligatorio.");
       return;
     }
 
@@ -82,10 +71,8 @@ export const AddStoreModal = ({
 
     try {
       await onSubmit({
-        name: name.trim(),
-        location: location.trim(),
+        name: trimmedName,
         description: description.trim() || undefined,
-        imageUrl: imageUrl.trim() || undefined,
       });
       applyInitialValues();
       onClose();
@@ -94,8 +81,8 @@ export const AddStoreModal = ({
         submitError instanceof Error
           ? submitError.message
           : isEdit
-          ? "No se pudo actualizar la tienda."
-          : "No se pudo crear la tienda."
+          ? "No se pudo actualizar la categoría."
+          : "No se pudo crear la categoría."
       );
     } finally {
       setSubmitting(false);
@@ -111,7 +98,7 @@ export const AddStoreModal = ({
         <View style={styles.sheet}>
           <View style={styles.header}>
             <Text style={styles.title}>
-              {isEdit ? "Editar tienda" : "Nueva tienda"}
+              {isEdit ? "Editar categoría" : "Nueva categoría"}
             </Text>
             <Pressable onPress={handleClose} style={styles.closeButton}>
               <Text style={styles.closeLabel}>Cerrar</Text>
@@ -123,16 +110,7 @@ export const AddStoreModal = ({
             <TextInput
               value={name}
               onChangeText={setName}
-              placeholder="Nintendo Store Monterrey"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-              style={styles.input}
-            />
-
-            <Text style={styles.label}>Ubicación *</Text>
-            <TextInput
-              value={location}
-              onChangeText={setLocation}
-              placeholder="Centro comercial, ciudad"
+              placeholder="Accesorios"
               placeholderTextColor="rgba(255,255,255,0.4)"
               style={styles.input}
             />
@@ -141,20 +119,10 @@ export const AddStoreModal = ({
             <TextInput
               value={description}
               onChangeText={setDescription}
-              placeholder="Notas internas o highlights"
+              placeholder="Notas internas"
               placeholderTextColor="rgba(255,255,255,0.4)"
               style={[styles.input, styles.multiline]}
               multiline
-            />
-
-            <Text style={styles.label}>Imagen (URL)</Text>
-            <TextInput
-              value={imageUrl}
-              onChangeText={setImageUrl}
-              placeholder="https://"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-              style={styles.input}
-              autoCapitalize="none"
             />
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -169,7 +137,7 @@ export const AddStoreModal = ({
                   ? "Guardando…"
                   : isEdit
                   ? "Guardar cambios"
-                  : "Guardar tienda"}
+                  : "Guardar categoría"}
               </Text>
             </Pressable>
           </View>

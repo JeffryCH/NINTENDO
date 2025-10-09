@@ -8,17 +8,33 @@ import {
   ScrollView,
   Image,
   Pressable,
+  Alert,
+  TextInput,
 } from "react-native";
 import { useInventoryStore } from "@/stores/useInventoryStore";
 import { ProductCard } from "@/components/ProductCard";
 import { AddProductModal, ProductFormData } from "@/components/AddProductModal";
+import { AddStoreModal } from "@/components/AddStoreModal";
+import { CategoryModal } from "@/components/CategoryModal";
 import { formatCurrency } from "@/utils/formatCurrency";
+import type { Category, Product, Store } from "@/types/inventory";
 
 export default function StoreDetailScreen() {
   const router = useRouter();
   const { storeId } = useLocalSearchParams<{ storeId: string }>();
-  const [modalVisible, setModalVisible] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [storeModalVisible, setStoreModalVisible] = useState(false);
+  const [categoryModalState, setCategoryModalState] = useState<{
+    visible: boolean;
+    mode: "create" | "edit";
+    category: Category | null;
+  }>({ visible: false, mode: "create", category: null });
+  const [productModalState, setProductModalState] = useState<{
+    visible: boolean;
+    mode: "create" | "edit";
+    product: Product | null;
+  }>({ visible: false, mode: "create", product: null });
 
   const store = useInventoryStore((state) =>
     state.stores.find((item) => item.id === storeId)
@@ -31,17 +47,49 @@ export default function StoreDetailScreen() {
   );
   const addCategory = useInventoryStore((state) => state.addCategory);
   const addProduct = useInventoryStore((state) => state.addProduct);
+  const updateStore = useInventoryStore((state) => state.updateStore);
+  const removeStore = useInventoryStore((state) => state.removeStore);
+  const updateCategory = useInventoryStore((state) => state.updateCategory);
+  const removeCategory = useInventoryStore((state) => state.removeCategory);
+  const updateProduct = useInventoryStore((state) => state.updateProduct);
+  const removeProduct = useInventoryStore((state) => state.removeProduct);
   const setProductStock = useInventoryStore((state) => state.setProductStock);
   const toggleOffer = useInventoryStore((state) => state.toggleOffer);
 
+  const categoryMap = useMemo(() => {
+    const map = new Map<string, Category>();
+    categories.forEach((category) => {
+      map.set(category.id, category);
+    });
+    return map;
+  }, [categories]);
+
+  const filteredProducts = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) {
+      return products;
+    }
+
+    return products.filter((product) => {
+      const category = categoryMap.get(product.categoryId);
+      const fields = [
+        product.name,
+        product.description ?? "",
+        category?.name ?? "",
+      ];
+
+      return fields.some((field) => field.toLowerCase().includes(query));
+    });
+  }, [products, categoryMap, searchQuery]);
+
   const groupedProducts = useMemo(() => {
-    const map = new Map<string, typeof products>();
+    const map = new Map<string, typeof filteredProducts>();
 
     categories.forEach((category) => {
       map.set(category.id, []);
     });
 
-    products.forEach((product) => {
+    filteredProducts.forEach((product) => {
       const bucket = map.get(product.categoryId);
       if (bucket) {
         bucket.push(product);
@@ -50,8 +98,23 @@ export default function StoreDetailScreen() {
       }
     });
 
+    if (searchQuery.trim()) {
+      for (const [key, value] of Array.from(map.entries())) {
+        if (value.length === 0) {
+          map.delete(key);
+        }
+      }
+    }
+
     return map;
-  }, [categories, products]);
+  }, [categories, filteredProducts, searchQuery]);
+
+  const groupedEntries = useMemo(
+    () => Array.from(groupedProducts.entries()),
+    [groupedProducts]
+  );
+
+  const isSearching = searchQuery.trim().length > 0;
 
   const stats = useMemo(() => {
     const totalStock = products.reduce(
@@ -72,33 +135,60 @@ export default function StoreDetailScreen() {
     return { totalStock, value, lowStock };
   }, [products]);
 
-  const handleCreateProduct = async (data: ProductFormData) => {
+  const resolveCategoryId = async (categoryName: string): Promise<string> => {
+    if (!storeId) {
+      throw new Error("No se pudo identificar la tienda actual.");
+    }
+
+    const existing = categories.find(
+      (category) =>
+        category.name.trim().toLowerCase() === categoryName.trim().toLowerCase()
+    );
+    if (existing) {
+      return existing.id;
+    }
+
+    const newCategory = await addCategory({
+      storeId,
+      name: categoryName,
+    });
+    return newCategory.id;
+  };
+
+  const handleSubmitProduct = async (data: ProductFormData) => {
     if (!storeId) return;
 
     try {
-      let categoryId = categories.find(
-        (category) =>
-          category.name.toLowerCase() === data.categoryName.toLowerCase()
-      )?.id;
-      if (!categoryId) {
-        const newCategory = await addCategory({
-          storeId,
-          name: data.categoryName,
+      const categoryId = await resolveCategoryId(data.categoryName);
+
+      if (productModalState.mode === "edit" && productModalState.product) {
+        await updateProduct({
+          productId: productModalState.product.id,
+          data: {
+            name: data.name,
+            price: data.price,
+            stock: data.stock,
+            imageUrl: data.imageUrl,
+            description: data.description,
+            hasOffer: data.hasOffer,
+            offerPrice: data.hasOffer ? data.offerPrice : undefined,
+            categoryId,
+          },
         });
-        categoryId = newCategory.id;
+      } else {
+        await addProduct({
+          storeId,
+          categoryId,
+          name: data.name,
+          price: data.price,
+          stock: data.stock,
+          imageUrl: data.imageUrl,
+          description: data.description,
+          hasOffer: data.hasOffer,
+          offerPrice: data.offerPrice,
+        });
       }
 
-      await addProduct({
-        storeId,
-        categoryId,
-        name: data.name,
-        price: data.price,
-        stock: data.stock,
-        imageUrl: data.imageUrl,
-        description: data.description,
-        hasOffer: data.hasOffer,
-        offerPrice: data.offerPrice,
-      });
       setError(null);
     } catch (submitError) {
       setError(
@@ -128,6 +218,160 @@ export default function StoreDetailScreen() {
     const normalizedOffer = Math.max(1, Math.round(referencePrice));
 
     await toggleOffer(productId, enable, enable ? normalizedOffer : undefined);
+  };
+
+  const openProductModal = (
+    mode: "create" | "edit",
+    product: Product | null
+  ) => {
+    setProductModalState({ visible: true, mode, product });
+  };
+
+  const closeProductModal = () => {
+    setProductModalState({ visible: false, mode: "create", product: null });
+  };
+
+  const openCategoryModal = (
+    mode: "create" | "edit",
+    category: Category | null
+  ) => {
+    setCategoryModalState({ visible: true, mode, category });
+  };
+
+  const closeCategoryModal = () => {
+    setCategoryModalState({ visible: false, mode: "create", category: null });
+  };
+
+  const handleSubmitCategory = async (data: {
+    name: string;
+    description?: string;
+  }) => {
+    if (!storeId) return;
+
+    try {
+      if (categoryModalState.mode === "edit" && categoryModalState.category) {
+        await updateCategory({
+          categoryId: categoryModalState.category.id,
+          data,
+        });
+      } else {
+        await addCategory({
+          storeId,
+          name: data.name,
+          description: data.description,
+        });
+      }
+      setError(null);
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : "No se pudo guardar la categoría."
+      );
+      throw submitError;
+    }
+  };
+
+  const handleDeleteCategory = (category: Category) => {
+    Alert.alert(
+      "Eliminar categoría",
+      `¿Eliminar la categoría ${category.name}? Se eliminarán sus productos asociados.`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Eliminar",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await removeCategory(category.id);
+              setError(null);
+            } catch (removeError) {
+              setError(
+                removeError instanceof Error
+                  ? removeError.message
+                  : "No se pudo eliminar la categoría."
+              );
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteProduct = (product: Product) => {
+    Alert.alert(
+      "Eliminar producto",
+      `¿Eliminar ${product.name}? Esta acción no se puede deshacer.`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Eliminar",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await removeProduct(product.id);
+              setError(null);
+            } catch (removeError) {
+              setError(
+                removeError instanceof Error
+                  ? removeError.message
+                  : "No se pudo eliminar el producto."
+              );
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleUpdateStore = async (data: {
+    name: string;
+    location: string;
+    description?: string;
+    imageUrl?: string;
+  }) => {
+    if (!store) return;
+
+    try {
+      await updateStore({ storeId: store.id, data });
+      setError(null);
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : "No se pudo actualizar la tienda."
+      );
+      throw submitError;
+    }
+  };
+
+  const handleRemoveStore = () => {
+    if (!store) return;
+
+    Alert.alert(
+      "Eliminar tienda",
+      "Eliminar la tienda también borrará categorías y productos asociados.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Eliminar",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await removeStore(store.id);
+              setStoreModalVisible(false);
+              router.replace("/");
+            } catch (removeError) {
+              setError(
+                removeError instanceof Error
+                  ? removeError.message
+                  : "No se pudo eliminar la tienda."
+              );
+            }
+          },
+        },
+      ]
+    );
   };
 
   if (!store) {
@@ -169,6 +413,25 @@ export default function StoreDetailScreen() {
             {store.description ? (
               <Text style={styles.heroDescription}>{store.description}</Text>
             ) : null}
+            <View style={styles.heroActions}>
+              <Pressable
+                style={styles.secondaryButton}
+                onPress={() => {
+                  setError(null);
+                  setStoreModalVisible(true);
+                }}
+              >
+                <Text style={styles.secondaryLabel}>Editar tienda</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.secondaryButton, styles.dangerButton]}
+                onPress={handleRemoveStore}
+              >
+                <Text style={[styles.secondaryLabel, styles.dangerLabel]}>
+                  Eliminar tienda
+                </Text>
+              </Pressable>
+            </View>
           </View>
         </View>
 
@@ -202,73 +465,160 @@ export default function StoreDetailScreen() {
 
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Inventario</Text>
-          <Pressable
-            style={styles.secondaryButton}
-            onPress={() => setModalVisible(true)}
-          >
-            <Text style={styles.secondaryLabel}>Añadir producto</Text>
-          </Pressable>
+          <View style={styles.sectionActions}>
+            <Pressable
+              style={styles.secondaryButton}
+              onPress={() => {
+                setError(null);
+                openCategoryModal("create", null);
+              }}
+            >
+              <Text style={styles.secondaryLabel}>Añadir categoría</Text>
+            </Pressable>
+            <Pressable
+              style={styles.secondaryButton}
+              onPress={() => {
+                setError(null);
+                openProductModal("create", null);
+              }}
+            >
+              <Text style={styles.secondaryLabel}>Añadir producto</Text>
+            </Pressable>
+          </View>
+        </View>
+
+        <View style={styles.searchContainer}>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Buscar por nombre, categoría o descripción"
+            placeholderTextColor="rgba(255,255,255,0.45)"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoCorrect={false}
+            autoCapitalize="none"
+            returnKeyType="search"
+            selectionColor="#5668ff"
+            keyboardAppearance="dark"
+          />
         </View>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        {Array.from(groupedProducts.entries()).map(
-          ([categoryId, categoryProducts]) => {
-            const category = categories.find((item) => item.id === categoryId);
-            return (
-              <View key={categoryId} style={styles.categoryBlock}>
+        {groupedEntries.length === 0 && isSearching && products.length > 0 ? (
+          <View style={styles.noResults}>
+            <Text style={styles.noResultsTitle}>Sin coincidencias</Text>
+            <Text style={styles.noResultsSubtitle}>
+              Ajusta los términos de búsqueda o limpia el filtro para ver todo
+              el inventario.
+            </Text>
+          </View>
+        ) : null}
+
+        {groupedEntries.map(([categoryId, categoryProducts]) => {
+          const category = categoryMap.get(categoryId);
+          return (
+            <View key={categoryId} style={styles.categoryBlock}>
+              <View style={styles.categoryHeader}>
                 <Text style={styles.categoryTitle}>
                   {category ? category.name : "Sin categoría"}
                 </Text>
-                <View style={styles.categoryList}>
-                  {categoryProducts.map((product) => (
-                    <View key={product.id} style={styles.productRow}>
-                      <ProductCard product={product} category={category} />
-                      <View style={styles.actionsRow}>
-                        <Pressable
-                          style={styles.actionButton}
-                          onPress={() => handleStockChange(product.id, -1)}
-                        >
-                          <Text style={styles.actionLabel}>-1</Text>
-                        </Pressable>
-                        <Pressable
-                          style={styles.actionButton}
-                          onPress={() => handleStockChange(product.id, +1)}
-                        >
-                          <Text style={styles.actionLabel}>+1</Text>
-                        </Pressable>
-                        <Pressable
-                          style={styles.actionButton}
-                          onPress={() => handleStockChange(product.id, +5)}
-                        >
-                          <Text style={styles.actionLabel}>+5</Text>
-                        </Pressable>
-                        <Pressable
-                          style={[
-                            styles.offerButton,
-                            product.hasOffer && styles.offerButtonActive,
-                          ]}
-                          onPress={() => handleToggleOffer(product.id)}
-                        >
-                          <Text
-                            style={[
-                              styles.offerLabel,
-                              product.hasOffer && styles.offerLabelActive,
-                            ]}
-                          >
-                            {product.hasOffer
-                              ? "Oferta activa"
-                              : "Activar oferta"}
-                          </Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  ))}
-                </View>
+                {category ? (
+                  <View style={styles.categoryActions}>
+                    <Pressable
+                      style={styles.categoryActionButton}
+                      onPress={() => {
+                        setError(null);
+                        openCategoryModal("edit", category);
+                      }}
+                    >
+                      <Text style={styles.categoryActionLabel}>Editar</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[
+                        styles.categoryActionButton,
+                        styles.categoryDangerButton,
+                      ]}
+                      onPress={() => handleDeleteCategory(category)}
+                    >
+                      <Text
+                        style={[
+                          styles.categoryActionLabel,
+                          styles.categoryDangerLabel,
+                        ]}
+                      >
+                        Eliminar
+                      </Text>
+                    </Pressable>
+                  </View>
+                ) : null}
               </View>
-            );
-          }
-        )}
+              <View style={styles.categoryList}>
+                {categoryProducts.map((product) => (
+                  <View key={product.id} style={styles.productRow}>
+                    <ProductCard product={product} category={category} />
+                    <View style={styles.actionsRow}>
+                      <Pressable
+                        style={styles.actionButton}
+                        onPress={() => handleStockChange(product.id, -1)}
+                      >
+                        <Text style={styles.actionLabel}>-1</Text>
+                      </Pressable>
+                      <Pressable
+                        style={styles.actionButton}
+                        onPress={() => handleStockChange(product.id, +1)}
+                      >
+                        <Text style={styles.actionLabel}>+1</Text>
+                      </Pressable>
+                      <Pressable
+                        style={styles.actionButton}
+                        onPress={() => handleStockChange(product.id, +5)}
+                      >
+                        <Text style={styles.actionLabel}>+5</Text>
+                      </Pressable>
+                      <Pressable
+                        style={styles.actionButton}
+                        onPress={() => {
+                          setError(null);
+                          openProductModal("edit", product);
+                        }}
+                      >
+                        <Text style={styles.actionLabel}>Editar</Text>
+                      </Pressable>
+                      <Pressable
+                        style={[styles.actionButton, styles.dangerActionButton]}
+                        onPress={() => handleDeleteProduct(product)}
+                      >
+                        <Text
+                          style={[styles.actionLabel, styles.dangerActionLabel]}
+                        >
+                          Eliminar
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        style={[
+                          styles.offerButton,
+                          product.hasOffer && styles.offerButtonActive,
+                        ]}
+                        onPress={() => handleToggleOffer(product.id)}
+                      >
+                        <Text
+                          style={[
+                            styles.offerLabel,
+                            product.hasOffer && styles.offerLabelActive,
+                          ]}
+                        >
+                          {product.hasOffer
+                            ? "Oferta activa"
+                            : "Activar oferta"}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            </View>
+          );
+        })}
 
         {products.length === 0 ? (
           <View style={styles.emptyState}>
@@ -279,7 +629,10 @@ export default function StoreDetailScreen() {
             </Text>
             <Pressable
               style={styles.primaryButton}
-              onPress={() => setModalVisible(true)}
+              onPress={() => {
+                setError(null);
+                openProductModal("create", null);
+              }}
             >
               <Text style={styles.primaryButtonLabel}>Agregar producto</Text>
             </Pressable>
@@ -288,10 +641,57 @@ export default function StoreDetailScreen() {
       </ScrollView>
 
       <AddProductModal
-        visible={modalVisible}
-        onClose={() => setModalVisible(false)}
+        visible={productModalState.visible}
+        mode={productModalState.mode}
+        initialValues={
+          productModalState.mode === "edit" && productModalState.product
+            ? {
+                name: productModalState.product.name,
+                price: productModalState.product.price,
+                stock: productModalState.product.stock,
+                categoryName:
+                  categoryMap.get(productModalState.product.categoryId)?.name ??
+                  "",
+                imageUrl: productModalState.product.imageUrl,
+                description: productModalState.product.description,
+                hasOffer: productModalState.product.hasOffer,
+                offerPrice: productModalState.product.offerPrice,
+              }
+            : undefined
+        }
+        onClose={closeProductModal}
         categories={categories}
-        onSubmit={handleCreateProduct}
+        onSubmit={handleSubmitProduct}
+      />
+      <CategoryModal
+        visible={categoryModalState.visible}
+        mode={categoryModalState.mode}
+        initialValues={
+          categoryModalState.mode === "edit" && categoryModalState.category
+            ? {
+                name: categoryModalState.category.name,
+                description: categoryModalState.category.description,
+              }
+            : undefined
+        }
+        onClose={closeCategoryModal}
+        onSubmit={handleSubmitCategory}
+      />
+      <AddStoreModal
+        visible={storeModalVisible}
+        mode="edit"
+        initialValues={
+          store
+            ? {
+                name: store.name,
+                location: store.location,
+                description: store.description,
+                imageUrl: store.imageUrl,
+              }
+            : undefined
+        }
+        onClose={() => setStoreModalVisible(false)}
+        onSubmit={handleUpdateStore}
       />
     </SafeAreaView>
   );
@@ -324,6 +724,12 @@ const styles = StyleSheet.create({
     padding: 24,
     gap: 8,
     backgroundColor: "rgba(8,11,22,0.4)",
+  },
+  heroActions: {
+    flexDirection: "row",
+    gap: 12,
+    flexWrap: "wrap",
+    marginTop: 12,
   },
   backButton: {
     position: "absolute",
@@ -383,7 +789,27 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
+    alignItems: "flex-start",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  sectionActions: {
+    flexDirection: "row",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  searchContainer: {
+    marginHorizontal: 24,
+    marginBottom: 16,
+  },
+  searchInput: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    color: "#ffffff",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
   },
   sectionTitle: {
     color: "#ffffff",
@@ -400,20 +826,71 @@ const styles = StyleSheet.create({
     color: "#b4bcff",
     fontWeight: "600",
   },
+  dangerButton: {
+    backgroundColor: "rgba(255,99,132,0.16)",
+  },
+  dangerLabel: {
+    color: "#ff99b2",
+  },
   error: {
     color: "#ff6384",
     paddingHorizontal: 24,
     marginBottom: 8,
+  },
+  noResults: {
+    backgroundColor: "#10162b",
+    marginHorizontal: 24,
+    marginBottom: 16,
+    borderRadius: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 18,
+    gap: 6,
+  },
+  noResultsTitle: {
+    color: "#ffffff",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  noResultsSubtitle: {
+    color: "rgba(255,255,255,0.72)",
   },
   categoryBlock: {
     paddingHorizontal: 24,
     gap: 12,
     marginBottom: 24,
   },
+  categoryHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 12,
+  },
   categoryTitle: {
     color: "#ffffff",
     fontSize: 16,
     fontWeight: "600",
+  },
+  categoryActions: {
+    flexDirection: "row",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  categoryActionButton: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  categoryActionLabel: {
+    color: "#ffffff",
+    fontWeight: "600",
+  },
+  categoryDangerButton: {
+    backgroundColor: "rgba(255,99,132,0.16)",
+  },
+  categoryDangerLabel: {
+    color: "#ff99b2",
   },
   categoryList: {
     gap: 16,
@@ -434,6 +911,12 @@ const styles = StyleSheet.create({
   actionLabel: {
     color: "#ffffff",
     fontWeight: "600",
+  },
+  dangerActionButton: {
+    backgroundColor: "rgba(255,99,132,0.16)",
+  },
+  dangerActionLabel: {
+    color: "#ff99b2",
   },
   offerButton: {
     marginLeft: "auto",

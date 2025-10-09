@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Modal,
   View,
@@ -28,6 +28,8 @@ interface AddProductModalProps {
   categories: Category[];
   onClose: () => void;
   onSubmit: (data: ProductFormData) => Promise<void>;
+  mode?: "create" | "edit";
+  initialValues?: ProductFormData;
 }
 
 const numberFrom = (value: string) => {
@@ -41,6 +43,8 @@ export const AddProductModal = ({
   categories,
   onClose,
   onSubmit,
+  mode = "create",
+  initialValues,
 }: AddProductModalProps) => {
   const [name, setName] = useState("");
   const [categoryName, setCategoryName] = useState("");
@@ -53,21 +57,46 @@ export const AddProductModal = ({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const reset = () => {
-    setName("");
-    setCategoryName("");
-    setPrice("0");
-    setStock("0");
-    setImageUrl("");
-    setDescription("");
-    setHasOffer(false);
-    setOfferPrice("0");
+  const isEdit = mode === "edit";
+
+  const applyInitialValues = () => {
+    if (isEdit && initialValues) {
+      setName(initialValues.name);
+      setCategoryName(initialValues.categoryName);
+      setPrice(String(initialValues.price));
+      setStock(String(initialValues.stock));
+      setImageUrl(initialValues.imageUrl ?? "");
+      setDescription(initialValues.description ?? "");
+      setHasOffer(Boolean(initialValues.hasOffer));
+      setOfferPrice(
+        String(
+          initialValues.offerPrice !== undefined
+            ? initialValues.offerPrice
+            : initialValues.price
+        )
+      );
+    } else {
+      setName("");
+      setCategoryName("");
+      setPrice("0");
+      setStock("0");
+      setImageUrl("");
+      setDescription("");
+      setHasOffer(false);
+      setOfferPrice("0");
+    }
     setError(null);
   };
 
+  useEffect(() => {
+    if (visible) {
+      applyInitialValues();
+    }
+  }, [visible, isEdit, initialValues]);
+
   const handleClose = () => {
     if (submitting) return;
-    reset();
+    applyInitialValues();
     onClose();
   };
 
@@ -111,12 +140,14 @@ export const AddProductModal = ({
         hasOffer,
         offerPrice: hasOffer ? numericOffer : undefined,
       });
-      reset();
+      applyInitialValues();
       onClose();
     } catch (submitError) {
       setError(
         submitError instanceof Error
           ? submitError.message
+          : isEdit
+          ? "No se pudo actualizar el producto."
           : "No se pudo guardar el producto."
       );
     } finally {
@@ -136,7 +167,9 @@ export const AddProductModal = ({
       >
         <View style={styles.sheet}>
           <View style={styles.header}>
-            <Text style={styles.title}>Nuevo producto</Text>
+            <Text style={styles.title}>
+              {isEdit ? "Editar producto" : "Nuevo producto"}
+            </Text>
             <Pressable onPress={handleClose}>
               <Text style={styles.closeLabel}>Cerrar</Text>
             </Pressable>
@@ -244,7 +277,11 @@ export const AddProductModal = ({
               disabled={submitting}
             >
               <Text style={styles.submitLabel}>
-                {submitting ? "Guardando…" : "Guardar producto"}
+                {submitting
+                  ? "Guardando…"
+                  : isEdit
+                  ? "Guardar cambios"
+                  : "Guardar producto"}
               </Text>
             </Pressable>
           </ScrollView>

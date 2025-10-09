@@ -1,17 +1,31 @@
 import { useMemo, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { ScrollView, StyleSheet, Text, View, Pressable } from "react-native";
+import {
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  Pressable,
+} from "react-native";
 import { StoreCard } from "@/components/StoreCard";
 import { AddStoreModal } from "@/components/AddStoreModal";
 import { useInventoryStore } from "@/stores/useInventoryStore";
 import { formatCurrency } from "@/utils/formatCurrency";
+import type { Store } from "@/types/inventory";
 
 export default function HomeScreen() {
   const stores = useInventoryStore((state) => state.stores);
   const products = useInventoryStore((state) => state.products);
   const addStore = useInventoryStore((state) => state.addStore);
+  const updateStore = useInventoryStore((state) => state.updateStore);
+  const removeStore = useInventoryStore((state) => state.removeStore);
 
-  const [newStoreVisible, setNewStoreVisible] = useState(false);
+  const [storeModalVisible, setStoreModalVisible] = useState(false);
+  const [storeModalMode, setStoreModalMode] = useState<"create" | "edit">(
+    "create"
+  );
+  const [selectedStore, setSelectedStore] = useState<Store | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const metricsByStore = useMemo(() => {
@@ -66,38 +80,89 @@ export default function HomeScreen() {
     return { totalProducts, totalStock, inventoryValue, lowStock };
   }, [products]);
 
-  const handleCreateStore = async (payload: {
+  const handleSubmitStore = async (payload: {
     name: string;
     location: string;
     description?: string;
     imageUrl?: string;
   }) => {
     try {
-      await addStore(payload);
+      if (storeModalMode === "edit" && selectedStore) {
+        await updateStore({ storeId: selectedStore.id, data: payload });
+      } else {
+        await addStore(payload);
+      }
       setError(null);
     } catch (storeError) {
       setError(
         storeError instanceof Error
           ? storeError.message
+          : storeModalMode === "edit"
+          ? "No se pudo actualizar la tienda."
           : "No se pudo crear la tienda."
       );
       throw storeError;
     }
   };
 
+  const handleOpenCreateModal = () => {
+    setError(null);
+    setSelectedStore(null);
+    setStoreModalMode("create");
+    setStoreModalVisible(true);
+  };
+
+  const handleEditStore = (store: Store) => {
+    setError(null);
+    setSelectedStore(store);
+    setStoreModalMode("edit");
+    setStoreModalVisible(true);
+  };
+
+  const handleDeleteStore = (store: Store) => {
+    Alert.alert(
+      "Eliminar tienda",
+      `¿Seguro que deseas eliminar ${store.name}? También se eliminarán sus categorías y productos.`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Eliminar",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await removeStore(store.id);
+              setError(null);
+              if (selectedStore?.id === store.id) {
+                setStoreModalVisible(false);
+                setSelectedStore(null);
+                setStoreModalMode("create");
+              }
+            } catch (removeError) {
+              setError(
+                removeError instanceof Error
+                  ? removeError.message
+                  : "No se pudo eliminar la tienda."
+              );
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.header}>
-          <View>
+          <View style={styles.headerContent}>
             <Text style={styles.heading}>Inventario Nintendo</Text>
             <Text style={styles.subheading}>
               Gestiona tiendas, stock y ofertas en tiempo real.
             </Text>
           </View>
           <Pressable
-            style={styles.primaryButton}
-            onPress={() => setNewStoreVisible(true)}
+            style={[styles.primaryButton, styles.headerButton]}
+            onPress={handleOpenCreateModal}
           >
             <Text style={styles.primaryButtonLabel}>Añadir tienda</Text>
           </Pressable>
@@ -143,13 +208,32 @@ export default function HomeScreen() {
               lowStock: 0,
             };
             return (
-              <StoreCard
-                key={store.id}
-                store={store}
-                productCount={metrics.productCount}
-                inventoryValue={metrics.stockValue}
-                lowStockCount={metrics.lowStock}
-              />
+              <View key={store.id} style={styles.storeBlock}>
+                <StoreCard
+                  store={store}
+                  productCount={metrics.productCount}
+                  inventoryValue={metrics.stockValue}
+                  lowStockCount={metrics.lowStock}
+                />
+                <View style={styles.storeActions}>
+                  <Pressable
+                    style={styles.storeActionButton}
+                    onPress={() => handleEditStore(store)}
+                  >
+                    <Text style={styles.storeActionLabel}>Editar</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.storeActionButton, styles.storeDeleteButton]}
+                    onPress={() => handleDeleteStore(store)}
+                  >
+                    <Text
+                      style={[styles.storeActionLabel, styles.storeDeleteLabel]}
+                    >
+                      Eliminar
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
             );
           })}
           {stores.length === 0 ? (
@@ -165,9 +249,24 @@ export default function HomeScreen() {
       </ScrollView>
 
       <AddStoreModal
-        visible={newStoreVisible}
-        onClose={() => setNewStoreVisible(false)}
-        onSubmit={handleCreateStore}
+        visible={storeModalVisible}
+        mode={storeModalMode}
+        initialValues={
+          storeModalMode === "edit" && selectedStore
+            ? {
+                name: selectedStore.name,
+                location: selectedStore.location,
+                description: selectedStore.description,
+                imageUrl: selectedStore.imageUrl,
+              }
+            : undefined
+        }
+        onClose={() => {
+          setStoreModalVisible(false);
+          setSelectedStore(null);
+          setStoreModalMode("create");
+        }}
+        onSubmit={handleSubmitStore}
       />
     </SafeAreaView>
   );
@@ -185,8 +284,13 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 16,
+    flexWrap: "wrap",
+  },
+  headerContent: {
+    flexShrink: 1,
+    gap: 6,
   },
   heading: {
     fontSize: 28,
@@ -204,6 +308,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 14,
     borderRadius: 16,
+  },
+  headerButton: {
+    alignSelf: "flex-start",
   },
   primaryButtonLabel: {
     color: "#ffffff",
@@ -254,6 +361,30 @@ const styles = StyleSheet.create({
   list: {
     gap: 16,
     paddingBottom: 24,
+  },
+  storeBlock: {
+    gap: 10,
+  },
+  storeActions: {
+    flexDirection: "row",
+    gap: 10,
+    paddingHorizontal: 12,
+  },
+  storeActionButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "rgba(86,104,255,0.16)",
+  },
+  storeActionLabel: {
+    color: "#d8dcff",
+    fontWeight: "600",
+  },
+  storeDeleteButton: {
+    backgroundColor: "rgba(255,99,132,0.18)",
+  },
+  storeDeleteLabel: {
+    color: "#ff6384",
   },
   error: {
     color: "#ff6384",

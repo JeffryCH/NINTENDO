@@ -144,6 +144,16 @@ interface UpdateProductPayload {
   >;
 }
 
+interface UpdateStorePayload {
+  storeId: string;
+  data: Partial<Pick<Store, "name" | "location" | "description" | "imageUrl">>;
+}
+
+interface UpdateCategoryPayload {
+  categoryId: string;
+  data: Partial<Pick<Category, "name" | "description">>;
+}
+
 interface InventoryStore {
   stores: Store[];
   categories: Category[];
@@ -152,7 +162,13 @@ interface InventoryStore {
   load: () => Promise<void>;
   resetToDefaults: () => Promise<void>;
   addStore: (payload: AddStorePayload) => Promise<Store>;
+  updateStore: (payload: UpdateStorePayload) => Promise<Store | undefined>;
+  removeStore: (storeId: string) => Promise<void>;
   addCategory: (payload: AddCategoryPayload) => Promise<Category>;
+  updateCategory: (
+    payload: UpdateCategoryPayload
+  ) => Promise<Category | undefined>;
+  removeCategory: (categoryId: string) => Promise<void>;
   addProduct: (payload: AddProductPayload) => Promise<Product>;
   updateProduct: (
     payload: UpdateProductPayload
@@ -166,6 +182,7 @@ interface InventoryStore {
     hasOffer: boolean,
     offerPrice?: number
   ) => Promise<Product | undefined>;
+  removeProduct: (productId: string) => Promise<void>;
 }
 
 const defaultState: PersistedInventory = {
@@ -237,12 +254,62 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
     addStore: async (payload: AddStorePayload): Promise<Store> => {
       const newStore: Store = {
         id: generateId("store"),
-        ...payload,
+        name: payload.name.trim(),
+        location: payload.location.trim(),
+        description: payload.description?.trim() || undefined,
+        imageUrl: payload.imageUrl?.trim() || undefined,
       };
       const stores = [...get().stores, newStore];
       set({ stores });
       await persistState({ stores });
       return newStore;
+    },
+    updateStore: async ({
+      storeId,
+      data,
+    }: UpdateStorePayload): Promise<Store | undefined> => {
+      const stores = get().stores;
+      const index = stores.findIndex((store) => store.id === storeId);
+      if (index === -1) return undefined;
+
+      const current = stores[index];
+      const next: Store = {
+        ...current,
+        ...data,
+        name: data.name !== undefined ? data.name.trim() : current.name,
+        location:
+          data.location !== undefined ? data.location.trim() : current.location,
+        description:
+          data.description !== undefined
+            ? data.description.trim() || undefined
+            : current.description,
+        imageUrl:
+          data.imageUrl !== undefined
+            ? data.imageUrl.trim() || undefined
+            : current.imageUrl,
+      };
+
+      const nextStores = [...stores];
+      nextStores[index] = next;
+      set({ stores: nextStores });
+      await persistState({ stores: nextStores });
+      return next;
+    },
+    removeStore: async (storeId: string): Promise<void> => {
+      const stores = get().stores.filter((store) => store.id !== storeId);
+      if (stores.length === get().stores.length) {
+        return;
+      }
+
+      const categories = get().categories.filter(
+        (category) => category.storeId !== storeId
+      );
+      const products = get().products.filter(
+        (product) => product.storeId !== storeId
+      );
+
+      set({ stores, categories, products });
+      await persistState({ stores, categories, products });
     },
     addCategory: async ({
       storeId,
@@ -271,6 +338,63 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       set({ categories: nextCategories });
       await persistState({ categories: nextCategories });
       return newCategory;
+    },
+    updateCategory: async ({
+      categoryId,
+      data,
+    }: UpdateCategoryPayload): Promise<Category | undefined> => {
+      const categories = get().categories;
+      const index = categories.findIndex(
+        (category) => category.id === categoryId
+      );
+      if (index === -1) return undefined;
+
+      const current = categories[index];
+      const nextName = data.name?.trim();
+
+      if (nextName) {
+        const duplicate = categories.some(
+          (category) =>
+            category.id !== categoryId &&
+            category.storeId === current.storeId &&
+            category.name.trim().toLowerCase() === nextName.toLowerCase()
+        );
+
+        if (duplicate) {
+          throw new Error("Ya existe una categoría con ese nombre.");
+        }
+      }
+
+      const nextCategory: Category = {
+        ...current,
+        ...data,
+        name: nextName ?? current.name,
+        description:
+          data.description !== undefined
+            ? data.description.trim() || undefined
+            : current.description,
+      };
+
+      const nextCategories = [...categories];
+      nextCategories[index] = nextCategory;
+      set({ categories: nextCategories });
+      await persistState({ categories: nextCategories });
+      return nextCategory;
+    },
+    removeCategory: async (categoryId: string): Promise<void> => {
+      const categories = get().categories.filter(
+        (category) => category.id !== categoryId
+      );
+      if (categories.length === get().categories.length) {
+        return;
+      }
+
+      const products = get().products.filter(
+        (product) => product.categoryId !== categoryId
+      );
+
+      set({ categories, products });
+      await persistState({ categories, products });
     },
     addProduct: async ({
       storeId,
@@ -326,9 +450,31 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       if (index === -1) return undefined;
 
       const current = products[index];
+      const categories = get().categories;
+
+      if (data.categoryId) {
+        const category = categories.find(
+          (candidate) => candidate.id === data.categoryId
+        );
+
+        if (!category || category.storeId !== current.storeId) {
+          throw new Error(
+            "La categoría seleccionada no pertenece a esta tienda."
+          );
+        }
+      }
       const next: Product = {
         ...current,
         ...data,
+        name: data.name !== undefined ? data.name.trim() : current.name,
+        description:
+          data.description !== undefined
+            ? data.description.trim() || undefined
+            : current.description,
+        imageUrl:
+          data.imageUrl !== undefined
+            ? data.imageUrl.trim() || undefined
+            : current.imageUrl,
         hasOffer: data.hasOffer ?? current.hasOffer,
         offerPrice: data.hasOffer
           ? data.offerPrice
@@ -369,6 +515,17 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
           offerPrice: hasOffer ? offerPrice : undefined,
         },
       });
+    },
+    removeProduct: async (productId: string): Promise<void> => {
+      const products = get().products.filter(
+        (product) => product.id !== productId
+      );
+      if (products.length === get().products.length) {
+        return;
+      }
+
+      set({ products });
+      await persistState({ products });
     },
   };
 });
