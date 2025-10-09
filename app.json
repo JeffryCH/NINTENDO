@@ -5,17 +5,18 @@
     "scheme": "nintendo",
     "android": {
       "package": "com.nintendo.inventory",
-      "versionCode": 1
+      "versionCode": 3,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/app-icon.png",
+        "backgroundColor": "#080b16"
+      }
     },
-    "version": "1.0.0",
+    "version": "1.0.3",
+    "icon": "./assets/app-icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
-    "plugins": [
-      "expo-router"
-    ],
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+    "plugins": ["expo-router"],
+    "assetBundlePatterns": ["**/*"],
     "jsEngine": "hermes",
     "experiments": {
       "typedRoutes": true

@@ -39,6 +39,33 @@ El comando abrirá Expo Dev Tools en tu navegador y mostrará un código QR. Con
 - `npm run web:vite`: abre la app web con Vite (soluciona errores de `import.meta` y habilita HTTPS).
 - `npm test`: ejecuta las pruebas con Jest y React Testing Library.
 
+### Icono de la aplicación (Base64)
+
+La configuración de Expo se gestiona ahora mediante `app.config.js`. Allí se genera el archivo `assets/app-icon.png` cada vez que se detecta la variable de entorno `APP_ICON_BASE64`.
+
+1. Obtén tu icono en formato PNG (1024×1024 recomendado) y conviértelo a Base64. Puedes usar `Convertio`, `base64.guru`, o el siguiente comando en PowerShell:
+
+   ```powershell
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes(".\mi-icono.png")) > icono.b64.txt
+   ```
+
+2. Exporta la variable al iniciar Expo/EAS:
+
+   ```powershell
+   $env:APP_ICON_BASE64 = Get-Content .\icono.b64.txt -Raw
+   npm run start
+   ```
+
+   Para compilaciones EAS puedes definir `APP_ICON_BASE64` en `eas.json` o en los secretos del proyecto.
+
+3. Si la variable no está definida, se usará un icono transparente de 1×1 píxel como marcador de posición. El icono se guarda en `assets/app-icon.png` dentro del proyecto (se sobrescribe cada vez que cambias la variable).
+
+### Versionado de la app
+
+- `version` (semántica) vive en `app.config.js` y `app.json` para mantener sincronía con los servicios de Expo.
+- `android.versionCode` también se actualiza allí; súbelo en cada release para que Google Play acepte el binario.
+- Si en el futuro agregas soporte para iOS, define `ios.buildNumber` en el mismo archivo.
+
 ### Acceso remoto en desarrollo
 
 Para compartir tu app de desarrollo fuera de tu red local:
