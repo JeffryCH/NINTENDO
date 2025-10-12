@@ -112,7 +112,7 @@ module.exports = ({ config }) => {
     version: "1.0.3",
     orientation: "portrait",
     userInterfaceStyle: "dark",
-    plugins: ["expo-router", "expo-barcode-scanner"],
+    plugins: ["expo-router", "expo-camera"],
     assetBundlePatterns: ["**/*"],
     jsEngine: "hermes",
     experiments: {

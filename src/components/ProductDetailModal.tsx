@@ -14,6 +14,7 @@ import { Category, Product, Store } from "@/types/inventory";
 import { resolveMediaUri } from "@/utils/media";
 import { formatCurrency } from "@/utils/formatCurrency";
 import { PriceTrend } from "./PriceTrend";
+import { BarcodePreviewModal } from "./BarcodePreviewModal";
 
 interface RelatedAvailability {
   store: Store;
@@ -85,6 +86,10 @@ export const ProductDetailModal = ({
   const [pendingAction, setPendingAction] = useState<
     { kind: "stock"; delta: number } | { kind: "offer" } | null
   >(null);
+  const [barcodePreview, setBarcodePreview] = useState<{
+    label: string;
+    value: string;
+  } | null>(null);
 
   const category = useMemo(() => {
     if (!product) return null;
@@ -240,15 +245,45 @@ export const ProductDetailModal = ({
               <Text style={styles.sectionTitle}>Códigos</Text>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>UPC</Text>
-                <Text style={styles.infoValue}>
-                  {product.barcodes?.upc ?? "Sin especificar"}
-                </Text>
+                <View style={styles.codeValueRow}>
+                  <Text style={styles.infoValue}>
+                    {product.barcodes?.upc ?? "Sin especificar"}
+                  </Text>
+                  {product.barcodes?.upc ? (
+                    <Pressable
+                      style={styles.codeButton}
+                      onPress={() =>
+                        setBarcodePreview({
+                          label: "Código UPC",
+                          value: product.barcodes?.upc ?? "",
+                        })
+                      }
+                    >
+                      <Text style={styles.codeButtonLabel}>Ver</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>Caja</Text>
-                <Text style={styles.infoValue}>
-                  {product.barcodes?.box ?? "Sin especificar"}
-                </Text>
+                <View style={styles.codeValueRow}>
+                  <Text style={styles.infoValue}>
+                    {product.barcodes?.box ?? "Sin especificar"}
+                  </Text>
+                  {product.barcodes?.box ? (
+                    <Pressable
+                      style={styles.codeButton}
+                      onPress={() =>
+                        setBarcodePreview({
+                          label: "Código de caja",
+                          value: product.barcodes?.box ?? "",
+                        })
+                      }
+                    >
+                      <Text style={styles.codeButtonLabel}>Ver</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               </View>
             </View>
 
@@ -352,6 +387,12 @@ export const ProductDetailModal = ({
           </ScrollView>
         </View>
       </View>
+      <BarcodePreviewModal
+        visible={barcodePreview !== null}
+        label={barcodePreview?.label ?? ""}
+        code={barcodePreview?.value ?? null}
+        onClose={() => setBarcodePreview(null)}
+      />
     </Modal>
   );
 };
@@ -428,6 +469,21 @@ const styles = StyleSheet.create({
   infoValue: {
     color: "#ffffff",
     fontSize: 15,
+    fontWeight: "600",
+  },
+  codeValueRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  codeButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 14,
+    backgroundColor: "rgba(154,164,255,0.2)",
+    marginLeft: 12,
+  },
+  codeButtonLabel: {
+    color: "#9aa4ff",
     fontWeight: "600",
   },
   descriptionBox: {

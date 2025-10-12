@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Modal, Pressable, StyleSheet, Text, View } from "react-native";
-import { BarCodeScanner, BarCodeScannerResult } from "expo-barcode-scanner";
+import {
+  BarcodeScanningResult,
+  CameraView,
+  useCameraPermissions,
+} from "expo-camera";
 
 interface BarcodeScannerModalProps {
   visible: boolean;
@@ -15,6 +19,7 @@ export const BarcodeScannerModal = ({
   onDetected,
   title = "Escanear código",
 }: BarcodeScannerModalProps) => {
+  const [permission, requestPermission] = useCameraPermissions();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanning, setScanning] = useState(false);
 
@@ -27,9 +32,17 @@ export const BarcodeScannerModal = ({
     let mounted = true;
     (async () => {
       try {
-        const { status } = await BarCodeScanner.requestPermissionsAsync();
+        const status = permission?.status;
+        if (status === "granted") {
+          if (mounted) {
+            setHasPermission(true);
+          }
+          return;
+        }
+
+        const requestResult = await requestPermission();
         if (mounted) {
-          setHasPermission(status === "granted");
+          setHasPermission(requestResult?.status === "granted");
         }
       } catch (error) {
         console.warn("BarcodeScannerModal permission error", error);
@@ -42,10 +55,10 @@ export const BarcodeScannerModal = ({
     return () => {
       mounted = false;
     };
-  }, [visible]);
+  }, [permission?.status, requestPermission, visible]);
 
   const handleBarCodeScanned = useCallback(
-    ({ data }: BarCodeScannerResult) => {
+    ({ data }: BarcodeScanningResult) => {
       if (scanning) {
         return;
       }
@@ -89,8 +102,20 @@ export const BarcodeScannerModal = ({
             </View>
           ) : (
             <View style={styles.scannerContainer}>
-              <BarCodeScanner
-                onBarCodeScanned={handleBarCodeScanned}
+              <CameraView
+                facing="back"
+                onBarcodeScanned={handleBarCodeScanned}
+                barcodeScannerSettings={{
+                  barcodeTypes: [
+                    "qr",
+                    "ean13",
+                    "ean8",
+                    "upc_a",
+                    "upc_e",
+                    "code128",
+                    "code39",
+                  ],
+                }}
                 style={StyleSheet.absoluteFillObject}
               />
               <View style={styles.focusFrame}>
