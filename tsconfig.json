@@ -10,7 +10,9 @@
       "@/components/*": ["src/components/*"],
       "@/stores/*": ["src/stores/*"],
       "@/types/*": ["src/types/*"],
-      "@/utils/*": ["src/utils/*"]
+      "@/utils/*": ["src/utils/*"],
+      "expo-router": ["node_modules/expo-router"],
+      "expo-router/*": ["node_modules/expo-router/*"]
     }
   },
   "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts"],

@@ -12,7 +12,7 @@ import { StoreCard } from "@/components/StoreCard";
 import { AddStoreModal } from "@/components/AddStoreModal";
 import { useInventoryStore } from "@/stores/useInventoryStore";
 import { formatCurrency } from "@/utils/formatCurrency";
-import type { Store } from "@/types/inventory";
+import type { MediaAsset, Store } from "@/types/inventory";
 
 export default function HomeScreen() {
   const stores = useInventoryStore((state) => state.stores);
@@ -85,6 +85,7 @@ export default function HomeScreen() {
     location: string;
     description?: string;
     imageUrl?: string;
+    imageAsset?: MediaAsset;
   }) => {
     try {
       if (storeModalMode === "edit" && selectedStore) {
@@ -258,6 +259,7 @@ export default function HomeScreen() {
                 location: selectedStore.location,
                 description: selectedStore.description,
                 imageUrl: selectedStore.imageUrl,
+                imageAsset: selectedStore.imageAsset,
               }
             : undefined
         }

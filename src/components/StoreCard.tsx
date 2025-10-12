@@ -2,6 +2,7 @@ import type { FC } from "react";
 import { Link } from "expo-router";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { Store } from "@/types/inventory";
+import { resolveMediaUri } from "@/utils/media";
 import { formatCurrency } from "@/utils/formatCurrency";
 
 interface StoreCardProps {
@@ -17,15 +18,17 @@ export const StoreCard: FC<StoreCardProps> = ({
   inventoryValue,
   lowStockCount,
 }) => {
+  const coverUri = resolveMediaUri(store.imageAsset, store.imageUrl);
+
   return (
     <Link
       href={{ pathname: "/store/[storeId]", params: { storeId: store.id } }}
       asChild
     >
       <Pressable style={styles.card}>
-        {store.imageUrl ? (
+        {coverUri ? (
           <Image
-            source={{ uri: store.imageUrl }}
+            source={{ uri: coverUri }}
             style={styles.cover}
             resizeMode="cover"
           />

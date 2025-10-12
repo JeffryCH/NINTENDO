@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
@@ -11,13 +11,19 @@ import {
   Alert,
   TextInput,
 } from "react-native";
+import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
 import { useInventoryStore } from "@/stores/useInventoryStore";
 import { ProductCard } from "@/components/ProductCard";
 import { AddProductModal, ProductFormData } from "@/components/AddProductModal";
 import { AddStoreModal } from "@/components/AddStoreModal";
 import { CategoryModal } from "@/components/CategoryModal";
+import { ProductDetailModal } from "@/components/ProductDetailModal";
+import { BarcodeScannerModal } from "@/components/BarcodeScannerModal";
 import { formatCurrency } from "@/utils/formatCurrency";
-import type { Category, Product, Store } from "@/types/inventory";
+import { buildStoreInventoryReportHtml } from "@/utils/reporting";
+import { resolveMediaUri } from "@/utils/media";
+import type { Category, MediaAsset, Product, Store } from "@/types/inventory";
 
 export default function StoreDetailScreen() {
   const router = useRouter();
@@ -35,16 +41,21 @@ export default function StoreDetailScreen() {
     mode: "create" | "edit";
     product: Product | null;
   }>({ visible: false, mode: "create", product: null });
+  const [detailProduct, setDetailProduct] = useState<Product | null>(null);
+  const [barcodeScannerVisible, setBarcodeScannerVisible] = useState(false);
+  const [exportingReport, setExportingReport] = useState(false);
 
   const store = useInventoryStore((state) =>
     state.stores.find((item) => item.id === storeId)
   );
+  const storeCollection = useInventoryStore((state) => state.stores);
   const categories = useInventoryStore((state) =>
     state.categories.filter((category) => category.storeId === storeId)
   );
   const products = useInventoryStore((state) =>
     state.products.filter((product) => product.storeId === storeId)
   );
+  const allProducts = useInventoryStore((state) => state.products);
   const addCategory = useInventoryStore((state) => state.addCategory);
   const addProduct = useInventoryStore((state) => state.addProduct);
   const updateStore = useInventoryStore((state) => state.updateStore);
@@ -63,6 +74,13 @@ export default function StoreDetailScreen() {
     });
     return map;
   }, [categories]);
+  const storeMap = useMemo(() => {
+    const map = new Map<string, Store>();
+    storeCollection.forEach((item) => {
+      map.set(item.id, item);
+    });
+    return map;
+  }, [storeCollection]);
 
   const filteredProducts = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -76,6 +94,8 @@ export default function StoreDetailScreen() {
         product.name,
         product.description ?? "",
         category?.name ?? "",
+        product.barcodes?.upc ?? "",
+        product.barcodes?.box ?? "",
       ];
 
       return fields.some((field) => field.toLowerCase().includes(query));
@@ -131,9 +151,133 @@ export default function StoreDetailScreen() {
       0
     );
     const lowStock = products.filter((product) => product.stock <= 3).length;
+    const offerCount = products.filter((product) => product.hasOffer).length;
 
-    return { totalStock, value, lowStock };
+    return { totalStock, value, lowStock, offerCount };
   }, [products]);
+
+  const availabilityByProductId = useMemo(() => {
+    const availability = new Map<
+      string,
+      { store: Store; product: Product }[]
+    >();
+    if (!storeId) {
+      return availability;
+    }
+
+    const toBarcodeSet = (value: Product): Set<string> => {
+      const entries = [value.barcodes?.upc, value.barcodes?.box]
+        .map((item) => (item ? item.trim().toLowerCase() : ""))
+        .filter((item) => item.length > 0);
+      return new Set(entries);
+    };
+
+    const storeProducts = products;
+
+    storeProducts.forEach((product) => {
+      const currentProductBarcodes = toBarcodeSet(product);
+      const fallbackKey = product.name.trim().toLowerCase();
+      const matches: { store: Store; product: Product }[] = [];
+
+      allProducts.forEach((candidate) => {
+        if (candidate.id === product.id) return;
+        if (candidate.storeId === product.storeId) return;
+        if (candidate.stock <= 0) return;
+
+        const candidateStore = storeMap.get(candidate.storeId);
+        if (!candidateStore) return;
+
+        const candidateBarcodes = toBarcodeSet(candidate);
+        let isRelated = false;
+
+        if (currentProductBarcodes.size > 0 && candidateBarcodes.size > 0) {
+          const hasCommonBarcode = Array.from(candidateBarcodes).some((code) =>
+            currentProductBarcodes.has(code)
+          );
+          if (hasCommonBarcode) {
+            isRelated = true;
+          }
+        }
+
+        if (!isRelated) {
+          const candidateKey = candidate.name.trim().toLowerCase();
+          isRelated = candidateKey === fallbackKey;
+        }
+
+        if (isRelated) {
+          matches.push({ store: candidateStore, product: candidate });
+        }
+      });
+
+      availability.set(product.id, matches);
+    });
+
+    return availability;
+  }, [allProducts, products, storeId, storeMap]);
+
+  const detailAvailability = detailProduct
+    ? availabilityByProductId.get(detailProduct.id) ?? []
+    : [];
+
+  const crossStoreSummary = useMemo(() => {
+    const summary = new Map<
+      string,
+      {
+        store: Store;
+        overlapCount: number;
+        totalStock: number;
+        bestPrice: number;
+        offerMatches: number;
+      }
+    >();
+
+    availabilityByProductId.forEach((matches) => {
+      matches.forEach(({ store: candidateStore, product }) => {
+        if (!candidateStore || candidateStore.id === storeId) {
+          return;
+        }
+
+        const current = summary.get(candidateStore.id) ?? {
+          store: candidateStore,
+          overlapCount: 0,
+          totalStock: 0,
+          bestPrice: Number.POSITIVE_INFINITY,
+          offerMatches: 0,
+        };
+
+        current.overlapCount += 1;
+        current.totalStock += product.stock;
+        const effectivePrice =
+          product.hasOffer && product.offerPrice !== undefined
+            ? product.offerPrice
+            : product.price;
+        if (effectivePrice < current.bestPrice) {
+          current.bestPrice = effectivePrice;
+        }
+        if (product.hasOffer) {
+          current.offerMatches += 1;
+        }
+
+        summary.set(candidateStore.id, current);
+      });
+    });
+
+    return Array.from(summary.values())
+      .map((entry) => ({
+        store: entry.store,
+        overlapCount: entry.overlapCount,
+        totalStock: entry.totalStock,
+        bestPrice:
+          entry.bestPrice === Number.POSITIVE_INFINITY ? null : entry.bestPrice,
+        offerMatches: entry.offerMatches,
+      }))
+      .sort((a, b) => {
+        if (b.overlapCount !== a.overlapCount) {
+          return b.overlapCount - a.overlapCount;
+        }
+        return b.totalStock - a.totalStock;
+      });
+  }, [availabilityByProductId, storeId]);
 
   const resolveCategoryId = async (categoryName: string): Promise<string> => {
     if (!storeId) {
@@ -169,10 +313,13 @@ export default function StoreDetailScreen() {
             price: data.price,
             stock: data.stock,
             imageUrl: data.imageUrl,
+            imageAsset: data.imageAsset,
             description: data.description,
             hasOffer: data.hasOffer,
             offerPrice: data.hasOffer ? data.offerPrice : undefined,
             categoryId,
+            barcodes: data.barcodes,
+            discountInfo: data.discountInfo,
           },
         });
       } else {
@@ -183,9 +330,12 @@ export default function StoreDetailScreen() {
           price: data.price,
           stock: data.stock,
           imageUrl: data.imageUrl,
+          imageAsset: data.imageAsset,
           description: data.description,
           hasOffer: data.hasOffer,
-          offerPrice: data.offerPrice,
+          offerPrice: data.hasOffer ? data.offerPrice : undefined,
+          barcodes: data.barcodes,
+          discountInfo: data.discountInfo,
         });
       }
 
@@ -206,6 +356,7 @@ export default function StoreDetailScreen() {
 
     const nextStock = Math.max(0, product.stock + delta);
     await setProductStock(productId, nextStock);
+    setError(null);
   };
 
   const handleToggleOffer = async (productId: string) => {
@@ -218,7 +369,117 @@ export default function StoreDetailScreen() {
     const normalizedOffer = Math.max(1, Math.round(referencePrice));
 
     await toggleOffer(productId, enable, enable ? normalizedOffer : undefined);
+    setError(null);
   };
+
+  const handleExportPdf = useCallback(async () => {
+    if (!store) return;
+
+    try {
+      setExportingReport(true);
+
+      const categorySummaries = categories.map((category) => {
+        const categoryProducts = products.filter(
+          (product) => product.categoryId === category.id
+        );
+        const productCount = categoryProducts.length;
+        const stock = categoryProducts.reduce(
+          (acc, item) => acc + item.stock,
+          0
+        );
+        const value = categoryProducts.reduce(
+          (acc, item) =>
+            acc +
+            item.stock *
+              (item.hasOffer && item.offerPrice !== undefined
+                ? item.offerPrice
+                : item.price),
+          0
+        );
+        const offerCount = categoryProducts.filter(
+          (item) => item.hasOffer
+        ).length;
+
+        return {
+          name: category.name,
+          productCount,
+          stock,
+          value,
+          offerCount,
+        };
+      });
+
+      const lowStockProducts = products
+        .filter((product) => product.stock <= 3)
+        .sort((a, b) => a.stock - b.stock)
+        .map((product) => ({
+          name: product.name,
+          categoryName:
+            categoryMap.get(product.categoryId)?.name ?? "Sin categoria",
+          stock: product.stock,
+          price:
+            product.hasOffer && product.offerPrice !== undefined
+              ? product.offerPrice
+              : product.price,
+        }));
+
+      const offerProducts = products
+        .filter((product) => product.hasOffer)
+        .map((product) => ({
+          name: product.name,
+          categoryName:
+            categoryMap.get(product.categoryId)?.name ?? "Sin categoria",
+          stock: product.stock,
+          price: product.price,
+          offerPrice: product.offerPrice ?? product.price,
+        }));
+
+      const crossStoreReport = crossStoreSummary.map((entry) => ({
+        storeName: entry.store.name,
+        overlapCount: entry.overlapCount,
+        totalStock: entry.totalStock,
+        bestPrice: entry.bestPrice,
+        offerMatches: entry.offerMatches,
+      }));
+
+      const html = buildStoreInventoryReportHtml({
+        storeName: store.name,
+        storeLocation: store.location,
+        storeDescription: store.description,
+        generatedAt: new Date(),
+        metrics: {
+          totalProducts: products.length,
+          totalStock: stats.totalStock,
+          inventoryValue: stats.value,
+          offerCount: stats.offerCount,
+          lowStock: stats.lowStock,
+        },
+        categorySummaries,
+        lowStockProducts,
+        offerProducts,
+        crossStoreSummary: crossStoreReport,
+      });
+
+      const file = await Print.printToFileAsync({ html });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(file.uri, {
+          dialogTitle: `Reporte de inventario - ${store.name}`,
+        });
+      } else {
+        Alert.alert("Reporte generado", file.uri);
+      }
+    } catch (exportError) {
+      console.warn("Export PDF error", exportError);
+      Alert.alert(
+        "Error",
+        exportError instanceof Error
+          ? exportError.message
+          : "No se pudo generar el reporte en PDF."
+      );
+    } finally {
+      setExportingReport(false);
+    }
+  }, [store, categories, products, categoryMap, crossStoreSummary, stats]);
 
   const openProductModal = (
     mode: "create" | "edit",
@@ -229,6 +490,26 @@ export default function StoreDetailScreen() {
 
   const closeProductModal = () => {
     setProductModalState({ visible: false, mode: "create", product: null });
+  };
+
+  useEffect(() => {
+    if (!detailProduct) return;
+    const next = products.find((item) => item.id === detailProduct.id);
+    if (!next) {
+      setDetailProduct(null);
+      return;
+    }
+    if (next !== detailProduct) {
+      setDetailProduct(next);
+    }
+  }, [products, detailProduct]);
+
+  const openProductDetail = (product: Product) => {
+    setDetailProduct(product);
+  };
+
+  const closeProductDetail = () => {
+    setDetailProduct(null);
   };
 
   const openCategoryModal = (
@@ -311,6 +592,9 @@ export default function StoreDetailScreen() {
             try {
               await removeProduct(product.id);
               setError(null);
+              if (detailProduct?.id === product.id) {
+                setDetailProduct(null);
+              }
             } catch (removeError) {
               setError(
                 removeError instanceof Error
@@ -329,11 +613,19 @@ export default function StoreDetailScreen() {
     location: string;
     description?: string;
     imageUrl?: string;
+    imageAsset?: MediaAsset | null;
   }) => {
     if (!store) return;
 
     try {
-      await updateStore({ storeId: store.id, data });
+      const { imageAsset, ...rest } = data;
+      await updateStore({
+        storeId: store.id,
+        data: {
+          ...rest,
+          imageAsset: imageAsset ?? undefined,
+        },
+      });
       setError(null);
     } catch (submitError) {
       setError(
@@ -393,13 +685,15 @@ export default function StoreDetailScreen() {
     );
   }
 
+  const heroImageUri = resolveMediaUri(store.imageAsset, store.imageUrl);
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.hero}>
-          {store.imageUrl ? (
+          {heroImageUri ? (
             <Image
-              source={{ uri: store.imageUrl }}
+              source={{ uri: heroImageUri }}
               style={styles.heroImage}
               resizeMode="cover"
             />
@@ -451,6 +745,10 @@ export default function StoreDetailScreen() {
             </Text>
           </View>
           <View style={styles.metricCard}>
+            <Text style={styles.metricLabel}>Ofertas activas</Text>
+            <Text style={styles.metricValue}>{stats.offerCount}</Text>
+          </View>
+          <View style={styles.metricCard}>
             <Text style={styles.metricLabel}>Bajo stock</Text>
             <Text
               style={[
@@ -462,6 +760,38 @@ export default function StoreDetailScreen() {
             </Text>
           </View>
         </View>
+
+        {crossStoreSummary.length > 0 ? (
+          <View style={styles.analyticsSection}>
+            <Text style={styles.sectionTitle}>Cruces con otras tiendas</Text>
+            <Text style={styles.analyticsSubtitle}>
+              Coincidencias de stock y oportunidades de traslado.
+            </Text>
+            <View style={styles.crossStoreList}>
+              {crossStoreSummary.slice(0, 3).map((entry) => (
+                <View key={entry.store.id} style={styles.crossStoreCard}>
+                  <Text style={styles.crossStoreTitle}>{entry.store.name}</Text>
+                  <Text style={styles.crossStoreMeta}>
+                    Coincidencias: {entry.overlapCount}
+                  </Text>
+                  <Text style={styles.crossStoreMeta}>
+                    Stock combinado: {entry.totalStock}
+                  </Text>
+                  {entry.bestPrice !== null ? (
+                    <Text style={styles.crossStoreMeta}>
+                      Mejor precio: {formatCurrency(entry.bestPrice)}
+                    </Text>
+                  ) : null}
+                  {entry.offerMatches > 0 ? (
+                    <Text style={styles.crossStoreHighlight}>
+                      Ofertas activas: {entry.offerMatches}
+                    </Text>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          </View>
+        ) : null}
 
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Inventario</Text>
@@ -484,22 +814,42 @@ export default function StoreDetailScreen() {
             >
               <Text style={styles.secondaryLabel}>Añadir producto</Text>
             </Pressable>
+            <Pressable
+              style={[
+                styles.secondaryButton,
+                exportingReport && styles.disabledButton,
+              ]}
+              onPress={handleExportPdf}
+              disabled={exportingReport}
+            >
+              <Text style={styles.secondaryLabel}>
+                {exportingReport ? "Generando..." : "Exportar PDF"}
+              </Text>
+            </Pressable>
           </View>
         </View>
 
         <View style={styles.searchContainer}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Buscar por nombre, categoría o descripción"
-            placeholderTextColor="rgba(255,255,255,0.45)"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            autoCorrect={false}
-            autoCapitalize="none"
-            returnKeyType="search"
-            selectionColor="#5668ff"
-            keyboardAppearance="dark"
-          />
+          <View style={styles.searchRow}>
+            <TextInput
+              style={[styles.searchInput, styles.searchField]}
+              placeholder="Buscar por nombre, categoría, descripción o código"
+              placeholderTextColor="rgba(255,255,255,0.45)"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              autoCorrect={false}
+              autoCapitalize="none"
+              returnKeyType="search"
+              selectionColor="#5668ff"
+              keyboardAppearance="dark"
+            />
+            <Pressable
+              style={styles.scanSearchButton}
+              onPress={() => setBarcodeScannerVisible(true)}
+            >
+              <Text style={styles.scanSearchLabel}>Escanear</Text>
+            </Pressable>
+          </View>
         </View>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -554,66 +904,20 @@ export default function StoreDetailScreen() {
               </View>
               <View style={styles.categoryList}>
                 {categoryProducts.map((product) => (
-                  <View key={product.id} style={styles.productRow}>
+                  <Pressable
+                    key={product.id}
+                    style={styles.productRow}
+                    onPress={() => {
+                      setError(null);
+                      openProductDetail(product);
+                    }}
+                    onLongPress={() => {
+                      setError(null);
+                      openProductModal("edit", product);
+                    }}
+                  >
                     <ProductCard product={product} category={category} />
-                    <View style={styles.actionsRow}>
-                      <Pressable
-                        style={styles.actionButton}
-                        onPress={() => handleStockChange(product.id, -1)}
-                      >
-                        <Text style={styles.actionLabel}>-1</Text>
-                      </Pressable>
-                      <Pressable
-                        style={styles.actionButton}
-                        onPress={() => handleStockChange(product.id, +1)}
-                      >
-                        <Text style={styles.actionLabel}>+1</Text>
-                      </Pressable>
-                      <Pressable
-                        style={styles.actionButton}
-                        onPress={() => handleStockChange(product.id, +5)}
-                      >
-                        <Text style={styles.actionLabel}>+5</Text>
-                      </Pressable>
-                      <Pressable
-                        style={styles.actionButton}
-                        onPress={() => {
-                          setError(null);
-                          openProductModal("edit", product);
-                        }}
-                      >
-                        <Text style={styles.actionLabel}>Editar</Text>
-                      </Pressable>
-                      <Pressable
-                        style={[styles.actionButton, styles.dangerActionButton]}
-                        onPress={() => handleDeleteProduct(product)}
-                      >
-                        <Text
-                          style={[styles.actionLabel, styles.dangerActionLabel]}
-                        >
-                          Eliminar
-                        </Text>
-                      </Pressable>
-                      <Pressable
-                        style={[
-                          styles.offerButton,
-                          product.hasOffer && styles.offerButtonActive,
-                        ]}
-                        onPress={() => handleToggleOffer(product.id)}
-                      >
-                        <Text
-                          style={[
-                            styles.offerLabel,
-                            product.hasOffer && styles.offerLabelActive,
-                          ]}
-                        >
-                          {product.hasOffer
-                            ? "Oferta activa"
-                            : "Activar oferta"}
-                        </Text>
-                      </Pressable>
-                    </View>
-                  </View>
+                  </Pressable>
                 ))}
               </View>
             </View>
@@ -653,15 +957,33 @@ export default function StoreDetailScreen() {
                   categoryMap.get(productModalState.product.categoryId)?.name ??
                   "",
                 imageUrl: productModalState.product.imageUrl,
+                imageAsset: productModalState.product.imageAsset,
                 description: productModalState.product.description,
                 hasOffer: productModalState.product.hasOffer,
                 offerPrice: productModalState.product.offerPrice,
+                barcodes: productModalState.product.barcodes,
+                discountInfo: productModalState.product.discountInfo,
               }
             : undefined
         }
         onClose={closeProductModal}
         categories={categories}
         onSubmit={handleSubmitProduct}
+      />
+      <ProductDetailModal
+        visible={detailProduct !== null}
+        product={detailProduct}
+        store={store}
+        categories={categories}
+        onClose={closeProductDetail}
+        onEdit={(product) => {
+          closeProductDetail();
+          openProductModal("edit", product);
+        }}
+        onDelete={handleDeleteProduct}
+        onAdjustStock={handleStockChange}
+        onToggleOffer={handleToggleOffer}
+        availability={detailAvailability}
       />
       <CategoryModal
         visible={categoryModalState.visible}
@@ -687,11 +1009,21 @@ export default function StoreDetailScreen() {
                 location: store.location,
                 description: store.description,
                 imageUrl: store.imageUrl,
+                imageAsset: store.imageAsset,
               }
             : undefined
         }
         onClose={() => setStoreModalVisible(false)}
         onSubmit={handleUpdateStore}
+      />
+      <BarcodeScannerModal
+        visible={barcodeScannerVisible}
+        onClose={() => setBarcodeScannerVisible(false)}
+        onDetected={(value) => {
+          setBarcodeScannerVisible(false);
+          setSearchQuery(value.trim());
+        }}
+        title="Escanea para filtrar"
       />
     </SafeAreaView>
   );
@@ -762,6 +1094,43 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 24,
   },
+  analyticsSection: {
+    paddingHorizontal: 24,
+    marginBottom: 12,
+    gap: 8,
+  },
+  analyticsSubtitle: {
+    color: "rgba(255,255,255,0.65)",
+    fontSize: 13,
+  },
+  crossStoreList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  crossStoreCard: {
+    flexBasis: "47%",
+    backgroundColor: "#10162b",
+    borderRadius: 18,
+    padding: 16,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  crossStoreTitle: {
+    color: "#ffffff",
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  crossStoreMeta: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 13,
+  },
+  crossStoreHighlight: {
+    color: "#4cc38a",
+    fontSize: 13,
+    fontWeight: "600",
+  },
   metricCard: {
     flexBasis: "47%",
     backgroundColor: "#10162b",
@@ -802,6 +1171,11 @@ const styles = StyleSheet.create({
     marginHorizontal: 24,
     marginBottom: 16,
   },
+  searchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
   searchInput: {
     backgroundColor: "rgba(255,255,255,0.08)",
     color: "#ffffff",
@@ -810,6 +1184,19 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
+  },
+  searchField: {
+    flex: 1,
+  },
+  scanSearchButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: "rgba(86,104,255,0.16)",
+  },
+  scanSearchLabel: {
+    color: "#b4bcff",
+    fontWeight: "600",
   },
   sectionTitle: {
     color: "#ffffff",
@@ -831,6 +1218,9 @@ const styles = StyleSheet.create({
   },
   dangerLabel: {
     color: "#ff99b2",
+  },
+  disabledButton: {
+    opacity: 0.6,
   },
   error: {
     color: "#ff6384",
@@ -896,44 +1286,8 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   productRow: {
-    gap: 12,
-  },
-  actionsRow: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  actionButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.08)",
-  },
-  actionLabel: {
-    color: "#ffffff",
-    fontWeight: "600",
-  },
-  dangerActionButton: {
-    backgroundColor: "rgba(255,99,132,0.16)",
-  },
-  dangerActionLabel: {
-    color: "#ff99b2",
-  },
-  offerButton: {
-    marginLeft: "auto",
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: "rgba(86,104,255,0.16)",
-  },
-  offerButtonActive: {
-    backgroundColor: "rgba(76,195,138,0.18)",
-  },
-  offerLabel: {
-    color: "#b4bcff",
-    fontWeight: "600",
-  },
-  offerLabelActive: {
-    color: "#4cc38a",
+    borderRadius: 20,
+    overflow: "hidden",
   },
   emptyState: {
     backgroundColor: "#10162b",

@@ -1,5 +1,6 @@
 import { StyleSheet, Text, View, Image } from "react-native";
 import { Product, Category } from "@/types/inventory";
+import { resolveMediaUri } from "@/utils/media";
 import { formatCurrency } from "@/utils/formatCurrency";
 
 interface ProductCardProps {
@@ -9,11 +10,12 @@ interface ProductCardProps {
 
 export const ProductCard = ({ product, category }: ProductCardProps) => {
   const hasOffer = product.hasOffer && product.offerPrice !== undefined;
+  const previewUri = resolveMediaUri(product.imageAsset, product.imageUrl);
   return (
     <View style={styles.card}>
-      {product.imageUrl ? (
+      {previewUri ? (
         <Image
-          source={{ uri: product.imageUrl }}
+          source={{ uri: previewUri }}
           style={styles.thumbnail}
           resizeMode="cover"
         />

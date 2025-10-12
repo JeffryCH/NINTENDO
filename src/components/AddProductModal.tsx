@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Modal,
   View,
@@ -10,7 +10,14 @@ import {
   Platform,
   ScrollView,
 } from "react-native";
-import { Category } from "@/types/inventory";
+import {
+  Category,
+  MediaAsset,
+  ProductBarcodes,
+  ProductDiscountInfo,
+} from "@/types/inventory";
+import { MediaPickerField } from "@/components/MediaPickerField";
+import { BarcodeScannerModal } from "@/components/BarcodeScannerModal";
 
 export interface ProductFormData {
   name: string;
@@ -18,9 +25,12 @@ export interface ProductFormData {
   stock: number;
   categoryName: string;
   imageUrl?: string;
+  imageAsset?: MediaAsset;
   description?: string;
   hasOffer: boolean;
   offerPrice?: number;
+  barcodes?: ProductBarcodes;
+  discountInfo?: ProductDiscountInfo;
 }
 
 interface AddProductModalProps {
@@ -54,8 +64,21 @@ export const AddProductModal = ({
   const [description, setDescription] = useState("");
   const [hasOffer, setHasOffer] = useState(false);
   const [offerPrice, setOfferPrice] = useState("0");
+  const [imageAsset, setImageAsset] = useState<MediaAsset | undefined>(
+    undefined
+  );
+  const [barcodeUPC, setBarcodeUPC] = useState("");
+  const [barcodeBox, setBarcodeBox] = useState("");
+  const [zeroInterestMonths, setZeroInterestMonths] = useState("");
+  const [cashOnly, setCashOnly] = useState(false);
+  const [hasExpiration, setHasExpiration] = useState(false);
+  const [expiresAt, setExpiresAt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [scannerVisible, setScannerVisible] = useState(false);
+  const [scannerTarget, setScannerTarget] = useState<"upc" | "box" | null>(
+    null
+  );
 
   const isEdit = mode === "edit";
 
@@ -66,6 +89,7 @@ export const AddProductModal = ({
       setPrice(String(initialValues.price));
       setStock(String(initialValues.stock));
       setImageUrl(initialValues.imageUrl ?? "");
+      setImageAsset(initialValues.imageAsset);
       setDescription(initialValues.description ?? "");
       setHasOffer(Boolean(initialValues.hasOffer));
       setOfferPrice(
@@ -75,15 +99,32 @@ export const AddProductModal = ({
             : initialValues.price
         )
       );
+      setBarcodeUPC(initialValues.barcodes?.upc ?? "");
+      setBarcodeBox(initialValues.barcodes?.box ?? "");
+      setZeroInterestMonths(
+        initialValues.discountInfo?.zeroInterestMonths
+          ? String(initialValues.discountInfo.zeroInterestMonths)
+          : ""
+      );
+      setCashOnly(Boolean(initialValues.discountInfo?.cashOnly));
+      setHasExpiration(Boolean(initialValues.discountInfo?.hasExpiration));
+      setExpiresAt(initialValues.discountInfo?.expiresAt ?? "");
     } else {
       setName("");
       setCategoryName("");
       setPrice("0");
       setStock("0");
       setImageUrl("");
+      setImageAsset(undefined);
       setDescription("");
       setHasOffer(false);
       setOfferPrice("0");
+      setBarcodeUPC("");
+      setBarcodeBox("");
+      setZeroInterestMonths("");
+      setCashOnly(false);
+      setHasExpiration(false);
+      setExpiresAt("");
     }
     setError(null);
   };
@@ -102,6 +143,68 @@ export const AddProductModal = ({
 
   const handleSelectCategory = (value: string) => {
     setCategoryName(value);
+  };
+
+  const openScanner = (target: "upc" | "box") => {
+    setScannerTarget(target);
+    setScannerVisible(true);
+  };
+
+  const closeScanner = () => {
+    setScannerVisible(false);
+    setScannerTarget(null);
+  };
+
+  const handleScan = (value: string) => {
+    if (!scannerTarget) return;
+    if (scannerTarget === "upc") {
+      setBarcodeUPC(value);
+    } else {
+      setBarcodeBox(value);
+    }
+  };
+
+  const suggestedCategories = useMemo(
+    () =>
+      categories
+        .map((category) => category.name)
+        .filter((nameOption, index, arr) => arr.indexOf(nameOption) === index)
+        .slice(0, 3),
+    [categories]
+  );
+
+  const buildBarcodes = (): ProductBarcodes | undefined => {
+    const upcValue = barcodeUPC.trim();
+    const boxValue = barcodeBox.trim();
+    if (!upcValue && !boxValue) {
+      return undefined;
+    }
+    return {
+      upc: upcValue || undefined,
+      box: boxValue || undefined,
+    };
+  };
+
+  const buildDiscountInfo = (): ProductDiscountInfo | undefined => {
+    const zeroInterestRaw = parseInt(zeroInterestMonths, 10);
+    const zeroInterest =
+      Number.isFinite(zeroInterestRaw) && zeroInterestRaw > 0
+        ? zeroInterestRaw
+        : undefined;
+    const normalizedExpiration = hasExpiration
+      ? expiresAt.trim() || null
+      : null;
+
+    if (!zeroInterest && !cashOnly && !hasExpiration) {
+      return undefined;
+    }
+
+    return {
+      zeroInterestMonths: zeroInterest,
+      cashOnly,
+      hasExpiration,
+      expiresAt: normalizedExpiration,
+    };
   };
 
   const handleSubmit = async () => {
@@ -136,9 +239,12 @@ export const AddProductModal = ({
         price: numericPrice,
         stock: numericStock,
         imageUrl: imageUrl.trim() || undefined,
+        imageAsset,
         description: description.trim() || undefined,
         hasOffer,
         offerPrice: hasOffer ? numericOffer : undefined,
+        barcodes: buildBarcodes(),
+        discountInfo: buildDiscountInfo(),
       });
       applyInitialValues();
       onClose();
@@ -154,10 +260,6 @@ export const AddProductModal = ({
       setSubmitting(false);
     }
   };
-
-  const suggestions = categories
-    .map((category) => category.name)
-    .filter((nameOption, index, arr) => arr.indexOf(nameOption) === index);
 
   return (
     <Modal visible={visible} animationType="slide" transparent>
@@ -194,7 +296,7 @@ export const AddProductModal = ({
               style={styles.input}
             />
             <View style={styles.suggestionRow}>
-              {suggestions.slice(0, 3).map((option) => (
+              {suggestedCategories.map((option) => (
                 <Pressable
                   key={option}
                   onPress={() => handleSelectCategory(option)}
@@ -225,14 +327,12 @@ export const AddProductModal = ({
               style={styles.input}
             />
 
-            <Text style={styles.label}>Imagen (URL)</Text>
-            <TextInput
-              value={imageUrl}
-              onChangeText={setImageUrl}
-              placeholder="https://"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-              style={styles.input}
-              autoCapitalize="none"
+            <MediaPickerField
+              label="Imagen del producto"
+              asset={imageAsset}
+              imageUrl={imageUrl}
+              onAssetChange={setImageAsset}
+              onImageUrlChange={(value) => setImageUrl(value ?? "")}
             />
 
             <Text style={styles.label}>Descripción</Text>
@@ -269,6 +369,92 @@ export const AddProductModal = ({
               </>
             ) : null}
 
+            <View style={styles.divider} />
+
+            <Text style={styles.label}>Códigos de barras</Text>
+            <View style={styles.barcodeRow}>
+              <TextInput
+                value={barcodeUPC}
+                onChangeText={setBarcodeUPC}
+                placeholder="Código UPC"
+                placeholderTextColor="rgba(255,255,255,0.4)"
+                style={[styles.input, styles.flex]}
+                autoCapitalize="characters"
+              />
+              <Pressable
+                style={styles.scanButton}
+                onPress={() => openScanner("upc")}
+              >
+                <Text style={styles.scanLabel}>Escanear</Text>
+              </Pressable>
+            </View>
+            <View style={styles.barcodeRow}>
+              <TextInput
+                value={barcodeBox}
+                onChangeText={setBarcodeBox}
+                placeholder="Código caja"
+                placeholderTextColor="rgba(255,255,255,0.4)"
+                style={[styles.input, styles.flex]}
+                autoCapitalize="characters"
+              />
+              <Pressable
+                style={styles.scanButton}
+                onPress={() => openScanner("box")}
+              >
+                <Text style={styles.scanLabel}>Escanear</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.divider} />
+
+            <Text style={styles.label}>Promociones</Text>
+            <View style={styles.switchRow}>
+              <Pressable
+                style={[styles.checkbox, cashOnly && styles.checkboxChecked]}
+                onPress={() => setCashOnly((value: boolean) => !value)}
+              >
+                {cashOnly ? <Text style={styles.checkboxMark}>✓</Text> : null}
+              </Pressable>
+              <Text style={styles.switchLabel}>
+                Solo aplica pagando en efectivo
+              </Text>
+            </View>
+            <Text style={styles.secondaryLabel}>Meses tasa 0</Text>
+            <TextInput
+              value={zeroInterestMonths}
+              onChangeText={setZeroInterestMonths}
+              keyboardType="numeric"
+              placeholder="0"
+              placeholderTextColor="rgba(255,255,255,0.4)"
+              style={styles.input}
+            />
+            <View style={styles.switchRow}>
+              <Pressable
+                style={[
+                  styles.checkbox,
+                  hasExpiration && styles.checkboxChecked,
+                ]}
+                onPress={() => setHasExpiration((value: boolean) => !value)}
+              >
+                {hasExpiration ? (
+                  <Text style={styles.checkboxMark}>✓</Text>
+                ) : null}
+              </Pressable>
+              <Text style={styles.switchLabel}>
+                La promoción tiene fecha de expiración
+              </Text>
+            </View>
+            {hasExpiration ? (
+              <TextInput
+                value={expiresAt}
+                onChangeText={setExpiresAt}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor="rgba(255,255,255,0.4)"
+                style={styles.input}
+                autoCapitalize="none"
+              />
+            ) : null}
+
             {error ? <Text style={styles.error}>{error}</Text> : null}
 
             <Pressable
@@ -287,6 +473,19 @@ export const AddProductModal = ({
           </ScrollView>
         </View>
       </KeyboardAvoidingView>
+      <BarcodeScannerModal
+        visible={scannerVisible}
+        onClose={closeScanner}
+        onDetected={(value) => {
+          handleScan(value);
+          closeScanner();
+        }}
+        title={
+          scannerTarget === "upc"
+            ? "Escanea el código UPC"
+            : "Escanea el código de caja"
+        }
+      />
     </Modal>
   );
 };
@@ -384,6 +583,12 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.8)",
     fontSize: 15,
   },
+  secondaryLabel: {
+    color: "rgba(255,255,255,0.6)",
+    fontSize: 13,
+    marginTop: 12,
+    marginBottom: -4,
+  },
   error: {
     color: "#ff6384",
     fontSize: 13,
@@ -402,5 +607,28 @@ const styles = StyleSheet.create({
   },
   disabled: {
     opacity: 0.6,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    marginTop: 12,
+  },
+  barcodeRow: {
+    flexDirection: "row",
+    gap: 10,
+    alignItems: "center",
+  },
+  scanButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "rgba(86,104,255,0.16)",
+  },
+  scanLabel: {
+    color: "#b4bcff",
+    fontWeight: "600",
+  },
+  flex: {
+    flex: 1,
   },
 });

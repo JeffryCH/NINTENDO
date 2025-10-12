@@ -9,6 +9,8 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
+import { MediaAsset } from "@/types/inventory";
+import { MediaPickerField } from "@/components/MediaPickerField";
 
 interface AddStoreModalProps {
   visible: boolean;
@@ -18,6 +20,7 @@ interface AddStoreModalProps {
     location: string;
     description?: string;
     imageUrl?: string;
+    imageAsset?: MediaAsset;
   }) => Promise<void>;
   mode?: "create" | "edit";
   initialValues?: {
@@ -25,6 +28,7 @@ interface AddStoreModalProps {
     location?: string;
     description?: string;
     imageUrl?: string;
+    imageAsset?: MediaAsset;
   };
 }
 
@@ -39,6 +43,9 @@ export const AddStoreModal = ({
   const [location, setLocation] = useState("");
   const [description, setDescription] = useState("");
   const [imageUrl, setImageUrl] = useState("");
+  const [imageAsset, setImageAsset] = useState<MediaAsset | undefined>(
+    undefined
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,11 +57,13 @@ export const AddStoreModal = ({
       setLocation(initialValues.location ?? "");
       setDescription(initialValues.description ?? "");
       setImageUrl(initialValues.imageUrl ?? "");
+      setImageAsset(initialValues.imageAsset);
     } else {
       setName("");
       setLocation("");
       setDescription("");
       setImageUrl("");
+      setImageAsset(undefined);
     }
     setError(null);
   };
@@ -86,6 +95,7 @@ export const AddStoreModal = ({
         location: location.trim(),
         description: description.trim() || undefined,
         imageUrl: imageUrl.trim() || undefined,
+        imageAsset,
       });
       applyInitialValues();
       onClose();
@@ -147,14 +157,12 @@ export const AddStoreModal = ({
               multiline
             />
 
-            <Text style={styles.label}>Imagen (URL)</Text>
-            <TextInput
-              value={imageUrl}
-              onChangeText={setImageUrl}
-              placeholder="https://"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-              style={styles.input}
-              autoCapitalize="none"
+            <MediaPickerField
+              label="Imagen de la tienda"
+              asset={imageAsset}
+              imageUrl={imageUrl}
+              onAssetChange={setImageAsset}
+              onImageUrlChange={(value) => setImageUrl(value ?? "")}
             />
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -166,7 +174,7 @@ export const AddStoreModal = ({
             >
               <Text style={styles.submitLabel}>
                 {submitting
-                  ? "Guardando…"
+                  ? "Guardando..."
                   : isEdit
                   ? "Guardar cambios"
                   : "Guardar tienda"}
