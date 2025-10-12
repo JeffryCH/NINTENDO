@@ -68,7 +68,7 @@ export const MediaPickerField = ({
       try {
         setPending(source);
         const pickerOptions: ImagePicker.ImagePickerOptions = {
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          mediaTypes: ["images"],
           allowsEditing: true,
           quality: 0.8,
         };
