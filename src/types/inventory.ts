@@ -61,8 +61,48 @@ export interface Product {
   barcodes?: ProductBarcodes;
 }
 
+export interface ProductTemplate {
+  id: UUID;
+  name: string;
+  categoryName?: string;
+  basePrice: number;
+  imageUrl?: string;
+  imageAsset?: MediaAsset;
+  description?: string;
+  barcodes?: ProductBarcodes;
+  sourceStoreId?: UUID;
+  sourceStoreName?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt?: string;
+}
+
 export interface OfferSummary {
   productId: UUID;
   active: boolean;
   offerPrice?: number;
+}
+
+export type InventoryMovementKind = "increase" | "decrease" | "initial";
+
+export type InventoryMovementReason =
+  | "restock"
+  | "sale"
+  | "manual-adjust"
+  | "transfer"
+  | "initial-load";
+
+export interface InventoryMovement {
+  id: UUID;
+  productId: UUID;
+  storeId: UUID;
+  delta: number;
+  quantity: number;
+  kind: InventoryMovementKind;
+  reason: InventoryMovementReason;
+  previousStock: number;
+  resultingStock: number;
+  note?: string;
+  createdAt: string;
+  synced: boolean;
 }

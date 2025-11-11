@@ -15,9 +15,12 @@ import {
   MediaAsset,
   ProductBarcodes,
   ProductDiscountInfo,
+  ProductTemplate,
 } from "@/types/inventory";
 import { MediaPickerField } from "@/components/MediaPickerField";
 import { BarcodeScannerModal } from "@/components/BarcodeScannerModal";
+import { CategoryModal } from "@/components/CategoryModal";
+import { ProductTemplatePickerModal } from "@/components/ProductTemplatePickerModal";
 
 export interface ProductFormData {
   name: string;
@@ -31,13 +34,20 @@ export interface ProductFormData {
   offerPrice?: number;
   barcodes?: ProductBarcodes;
   discountInfo?: ProductDiscountInfo;
+  templateId?: string;
 }
 
 interface AddProductModalProps {
   visible: boolean;
   categories: Category[];
+  templates: ProductTemplate[];
   onClose: () => void;
   onSubmit: (data: ProductFormData) => Promise<void>;
+  onCreateCategory: (data: {
+    name: string;
+    description?: string;
+  }) => Promise<Category>;
+  onTemplateUsed: (templateId: string) => Promise<ProductTemplate | undefined>;
   mode?: "create" | "edit";
   initialValues?: ProductFormData;
 }
@@ -51,8 +61,11 @@ const numberFrom = (value: string) => {
 export const AddProductModal = ({
   visible,
   categories,
+  templates,
   onClose,
   onSubmit,
+  onCreateCategory,
+  onTemplateUsed,
   mode = "create",
   initialValues,
 }: AddProductModalProps) => {
@@ -79,6 +92,11 @@ export const AddProductModal = ({
   const [scannerTarget, setScannerTarget] = useState<"upc" | "box" | null>(
     null
   );
+  const [createCategoryVisible, setCreateCategoryVisible] = useState(false);
+  const [templatePickerVisible, setTemplatePickerVisible] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<
+    string | undefined
+  >(undefined);
 
   const isEdit = mode === "edit";
 
@@ -127,6 +145,8 @@ export const AddProductModal = ({
       setExpiresAt("");
     }
     setError(null);
+    setSelectedTemplateId(undefined);
+    setTemplatePickerVisible(false);
   };
 
   useEffect(() => {
@@ -137,6 +157,7 @@ export const AddProductModal = ({
 
   const handleClose = () => {
     if (submitting) return;
+    setTemplatePickerVisible(false);
     applyInitialValues();
     onClose();
   };
@@ -161,6 +182,57 @@ export const AddProductModal = ({
       setBarcodeUPC(value);
     } else {
       setBarcodeBox(value);
+    }
+  };
+
+  const openCreateCategoryModal = () => {
+    setCreateCategoryVisible(true);
+  };
+
+  const closeCreateCategoryModal = () => {
+    setCreateCategoryVisible(false);
+  };
+
+  const handleSubmitCategoryCreation = async (data: {
+    name: string;
+    description?: string;
+  }) => {
+    const category = await onCreateCategory(data);
+    setCategoryName(category.name);
+    setError(null);
+  };
+
+  const openTemplatePicker = () => {
+    setTemplatePickerVisible(true);
+  };
+
+  const closeTemplatePicker = () => {
+    setTemplatePickerVisible(false);
+  };
+
+  const handleApplyTemplate = async (template: ProductTemplate) => {
+    setSelectedTemplateId(template.id);
+    setName(template.name);
+    setCategoryName(template.categoryName ?? "");
+    setPrice(String(template.basePrice));
+    setOfferPrice(String(template.basePrice));
+    setHasOffer(false);
+    setStock("0");
+    setImageUrl(template.imageUrl ?? "");
+    setImageAsset(template.imageAsset);
+    setDescription(template.description ?? "");
+    setBarcodeUPC(template.barcodes?.upc ?? "");
+    setBarcodeBox(template.barcodes?.box ?? "");
+    setZeroInterestMonths("");
+    setCashOnly(false);
+    setHasExpiration(false);
+    setExpiresAt("");
+    setError(null);
+    closeTemplatePicker();
+    try {
+      await onTemplateUsed(template.id);
+    } catch (usageError) {
+      console.warn("No se pudo registrar el uso de la plantilla", usageError);
     }
   };
 
@@ -245,6 +317,7 @@ export const AddProductModal = ({
         offerPrice: hasOffer ? numericOffer : undefined,
         barcodes: buildBarcodes(),
         discountInfo: buildDiscountInfo(),
+        templateId: selectedTemplateId,
       });
       applyInitialValues();
       onClose();
@@ -305,6 +378,26 @@ export const AddProductModal = ({
                   <Text style={styles.suggestionLabel}>{option}</Text>
                 </Pressable>
               ))}
+            </View>
+            <View style={styles.categoryHelpers}>
+              <Pressable
+                onPress={openCreateCategoryModal}
+                style={styles.createCategoryButton}
+              >
+                <Text style={styles.createCategoryLabel}>
+                  Crear nueva categoría
+                </Text>
+              </Pressable>
+              {templates.length > 0 ? (
+                <Pressable
+                  onPress={openTemplatePicker}
+                  style={styles.templateButton}
+                >
+                  <Text style={styles.templateLabel}>
+                    Buscar plantilla de producto
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
 
             <Text style={styles.label}>Precio *</Text>
@@ -486,6 +579,20 @@ export const AddProductModal = ({
             : "Escanea el código de caja"
         }
       />
+      <CategoryModal
+        visible={createCategoryVisible}
+        mode="create"
+        onClose={closeCreateCategoryModal}
+        onSubmit={async (data) => {
+          await handleSubmitCategoryCreation(data);
+        }}
+      />
+      <ProductTemplatePickerModal
+        visible={templatePickerVisible}
+        templates={templates}
+        onClose={closeTemplatePicker}
+        onSelect={handleApplyTemplate}
+      />
     </Modal>
   );
 };
@@ -554,6 +661,38 @@ const styles = StyleSheet.create({
   },
   suggestionLabel: {
     color: "#9aa4ff",
+    fontWeight: "600",
+  },
+  categoryHelpers: {
+    marginTop: 6,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  createCategoryButton: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "rgba(154,164,255,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(154,164,255,0.28)",
+  },
+  createCategoryLabel: {
+    color: "#9aa4ff",
+    fontWeight: "600",
+  },
+  templateButton: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "rgba(76,195,138,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(76,195,138,0.3)",
+  },
+  templateLabel: {
+    color: "#4cc38a",
     fontWeight: "600",
   },
   switchRow: {

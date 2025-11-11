@@ -8,11 +8,16 @@ import {
   ProductDiscountInfo,
   MediaAsset,
   ProductPriceSnapshot,
+  ProductTemplate,
+  InventoryMovement,
+  InventoryMovementReason,
+  InventoryMovementKind,
 } from "@/types/inventory";
 import { generateId } from "@/utils/id";
 
 const STORAGE_KEY = "nintendo-inventory-state";
-const CURRENT_SCHEMA_VERSION = 2;
+export const INVENTORY_STORAGE_KEY = STORAGE_KEY;
+const CURRENT_SCHEMA_VERSION = 5;
 const MAX_PRICE_HISTORY = 120;
 
 const createSnapshot = (
@@ -74,6 +79,172 @@ const normalizeDiscountInfo = (
     hasExpiration,
     expiresAt,
   };
+};
+
+const normalizeTemplate = (raw: any): ProductTemplate | null => {
+  if (!raw || typeof raw !== "object") return null;
+
+  const id = typeof raw.id === "string" && raw.id.trim() ? raw.id : null;
+  const name =
+    typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : "";
+  const basePriceCandidate = Number(raw.basePrice ?? raw.price ?? 0);
+
+  if (
+    !id ||
+    !name ||
+    Number.isNaN(basePriceCandidate) ||
+    basePriceCandidate <= 0
+  ) {
+    return null;
+  }
+
+  const categoryName =
+    typeof raw.categoryName === "string" && raw.categoryName.trim()
+      ? raw.categoryName.trim()
+      : undefined;
+  const sourceStoreId =
+    typeof raw.sourceStoreId === "string" && raw.sourceStoreId.trim()
+      ? raw.sourceStoreId.trim()
+      : undefined;
+  const sourceStoreName =
+    typeof raw.sourceStoreName === "string" && raw.sourceStoreName.trim()
+      ? raw.sourceStoreName.trim()
+      : undefined;
+
+  const createdAt =
+    typeof raw.createdAt === "string" && raw.createdAt
+      ? raw.createdAt
+      : new Date().toISOString();
+  const updatedAt =
+    typeof raw.updatedAt === "string" && raw.updatedAt
+      ? raw.updatedAt
+      : createdAt;
+  const lastUsedAt =
+    typeof raw.lastUsedAt === "string" && raw.lastUsedAt
+      ? raw.lastUsedAt
+      : undefined;
+
+  return {
+    id,
+    name,
+    categoryName,
+    basePrice: basePriceCandidate,
+    imageUrl:
+      typeof raw.imageUrl === "string" && raw.imageUrl.trim()
+        ? raw.imageUrl.trim()
+        : undefined,
+    imageAsset: normalizeMediaAsset(raw.imageAsset),
+    description:
+      typeof raw.description === "string" && raw.description.trim()
+        ? raw.description.trim()
+        : undefined,
+    barcodes: normalizeBarcodes(raw.barcodes),
+    sourceStoreId,
+    sourceStoreName,
+    createdAt,
+    updatedAt,
+    lastUsedAt,
+  };
+};
+
+const createTemplateFromProduct = (
+  product: Product,
+  category?: Category | null,
+  store?: Store | null
+): ProductTemplate => {
+  const now = new Date().toISOString();
+  return {
+    id: generateId("template"),
+    name: product.name,
+    categoryName: category?.name,
+    basePrice: product.price,
+    imageUrl: product.imageUrl,
+    imageAsset: product.imageAsset,
+    description: product.description,
+    barcodes: product.barcodes,
+    sourceStoreId: store?.id,
+    sourceStoreName: store?.name,
+    createdAt: now,
+    updatedAt: now,
+  };
+};
+
+const inferMovementKind = (delta: number): InventoryMovementKind => {
+  if (delta > 0) return "increase";
+  if (delta < 0) return "decrease";
+  return "initial";
+};
+
+const deriveMovementReason = (
+  delta: number,
+  provided?: InventoryMovementReason
+): InventoryMovementReason => {
+  if (provided) return provided;
+  if (delta > 0) return "restock";
+  if (delta < 0) return "sale";
+  return "manual-adjust";
+};
+
+const createMovementRecord = (params: {
+  product: Product;
+  delta: number;
+  previousStock: number;
+  reason?: InventoryMovementReason;
+  note?: string;
+  kind?: InventoryMovementKind;
+  synced?: boolean;
+}): InventoryMovement => {
+  const delta = Math.trunc(params.delta);
+  const quantity = Math.abs(delta);
+  const previousStock = Math.max(0, Math.trunc(params.previousStock));
+  const resultingStock = previousStock + delta;
+  const kind = params.kind ?? inferMovementKind(delta);
+  const reason = deriveMovementReason(delta, params.reason);
+  const note = params.note?.trim() || undefined;
+
+  return {
+    id: generateId("movement"),
+    productId: params.product.id,
+    storeId: params.product.storeId,
+    delta,
+    quantity,
+    kind,
+    reason,
+    previousStock,
+    resultingStock,
+    note,
+    createdAt: new Date().toISOString(),
+    synced: params.synced ?? false,
+  };
+};
+
+const createInitialMovementRecord = (
+  product: Product,
+  synced = true
+): InventoryMovement | null => {
+  if (product.stock <= 0) {
+    return null;
+  }
+
+  return createMovementRecord({
+    product,
+    delta: product.stock,
+    previousStock: 0,
+    reason: "initial-load",
+    note: "Stock inicial al registrar producto",
+    kind: "increase",
+    synced,
+  });
+};
+
+const toTemplateKey = (input: {
+  name: string;
+  barcodes?: ProductBarcodes;
+}): string => {
+  const nameKey = input.name.trim().toLowerCase();
+  const upc = input.barcodes?.upc?.trim().toLowerCase() ?? "";
+  const box = input.barcodes?.box?.trim().toLowerCase() ?? "";
+  return [nameKey, upc, box].filter((segment) => segment.length > 0).join("|");
 };
 
 const appendSnapshot = (
@@ -239,6 +410,88 @@ const normalizeProductRecord = (raw: any): Product | null => {
   };
 };
 
+const normalizeInventoryMovement = (raw: any): InventoryMovement | null => {
+  if (!raw || typeof raw !== "object") return null;
+
+  const id = typeof raw.id === "string" ? raw.id : String(raw.id ?? "");
+  const productId =
+    typeof raw.productId === "string"
+      ? raw.productId
+      : String(raw.productId ?? "");
+  const storeId =
+    typeof raw.storeId === "string" ? raw.storeId : String(raw.storeId ?? "");
+
+  if (!id || !productId || !storeId) {
+    return null;
+  }
+
+  const delta = Number(raw.delta ?? 0);
+  if (!Number.isFinite(delta)) {
+    return null;
+  }
+
+  const quantityCandidate = Number(raw.quantity ?? Math.abs(delta));
+  const quantity = Math.max(0, Math.abs(Math.trunc(quantityCandidate)));
+
+  const previousStockCandidate = Number(raw.previousStock ?? 0);
+  const previousStock = Number.isFinite(previousStockCandidate)
+    ? Math.trunc(previousStockCandidate)
+    : 0;
+  const resultingCandidate = Number(
+    raw.resultingStock ?? previousStock + delta
+  );
+  const resultingStock = Number.isFinite(resultingCandidate)
+    ? Math.trunc(resultingCandidate)
+    : previousStock + delta;
+
+  const kindCandidate = typeof raw.kind === "string" ? raw.kind : "";
+  const kind: InventoryMovementKind =
+    kindCandidate === "increase" ||
+    kindCandidate === "decrease" ||
+    kindCandidate === "initial"
+      ? (kindCandidate as InventoryMovementKind)
+      : inferMovementKind(delta);
+
+  const reasonCandidate = typeof raw.reason === "string" ? raw.reason : "";
+  const validReasons: InventoryMovementReason[] = [
+    "restock",
+    "sale",
+    "manual-adjust",
+    "transfer",
+    "initial-load",
+  ];
+  const reason = validReasons.includes(
+    reasonCandidate as InventoryMovementReason
+  )
+    ? (reasonCandidate as InventoryMovementReason)
+    : deriveMovementReason(delta);
+
+  const note =
+    typeof raw.note === "string" && raw.note.trim()
+      ? raw.note.trim()
+      : undefined;
+  const createdAt =
+    typeof raw.createdAt === "string" && raw.createdAt
+      ? raw.createdAt
+      : new Date().toISOString();
+  const synced = typeof raw.synced === "boolean" ? raw.synced : true;
+
+  return {
+    id,
+    productId,
+    storeId,
+    delta,
+    quantity,
+    kind,
+    reason,
+    previousStock,
+    resultingStock,
+    note,
+    createdAt,
+    synced,
+  };
+};
+
 const upgradePersistedInventory = (
   input: unknown
 ): PersistedInventory | null => {
@@ -250,6 +503,8 @@ const upgradePersistedInventory = (
     stores?: unknown;
     categories?: unknown;
     products?: unknown;
+    productTemplates?: unknown;
+    inventoryMovements?: unknown;
   };
 
   const normalizeCollection = <T>(
@@ -285,11 +540,47 @@ const upgradePersistedInventory = (
     INITIAL_PRODUCTS
   );
 
+  let productTemplates = normalizeCollection(
+    raw.productTemplates,
+    normalizeTemplate,
+    []
+  );
+
+  if (productTemplates.length === 0) {
+    const derived = products.map((product) =>
+      createTemplateFromProduct(
+        product,
+        categories.find((category) => category.id === product.categoryId) ??
+          null,
+        stores.find((store) => store.id === product.storeId) ?? null
+      )
+    );
+    productTemplates = derived.length > 0 ? derived : INITIAL_PRODUCT_TEMPLATES;
+  }
+
+  let inventoryMovements = normalizeCollection(
+    raw.inventoryMovements,
+    normalizeInventoryMovement,
+    INITIAL_INVENTORY_MOVEMENTS
+  );
+
+  if (inventoryMovements.length === 0) {
+    const derivedMovements = products
+      .map((product) => createInitialMovementRecord(product))
+      .filter((movement): movement is InventoryMovement => movement !== null);
+    inventoryMovements =
+      derivedMovements.length > 0
+        ? derivedMovements
+        : INITIAL_INVENTORY_MOVEMENTS;
+  }
+
   return {
     version: CURRENT_SCHEMA_VERSION,
     stores,
     categories,
     products,
+    productTemplates,
+    inventoryMovements,
   };
 };
 
@@ -399,11 +690,26 @@ const INITIAL_PRODUCTS: Product[] = [
   },
 ];
 
+const INITIAL_PRODUCT_TEMPLATES: ProductTemplate[] = INITIAL_PRODUCTS.map(
+  (product) =>
+    createTemplateFromProduct(
+      product,
+      INITIAL_CATEGORIES.find((category) => category.id === product.categoryId),
+      INITIAL_STORES.find((store) => store.id === product.storeId)
+    )
+);
+
+const INITIAL_INVENTORY_MOVEMENTS: InventoryMovement[] = INITIAL_PRODUCTS.map(
+  (product) => createInitialMovementRecord(product)
+).filter((movement): movement is InventoryMovement => movement !== null);
+
 interface PersistedInventory {
   version: number;
   stores: Store[];
   categories: Category[];
   products: Product[];
+  productTemplates: ProductTemplate[];
+  inventoryMovements: InventoryMovement[];
 }
 
 interface AddStorePayload {
@@ -433,6 +739,7 @@ interface AddProductPayload {
   offerPrice?: number;
   barcodes?: ProductBarcodes;
   discountInfo?: ProductDiscountInfo;
+  templateIdUsed?: string;
 }
 
 interface UpdateProductPayload {
@@ -470,10 +777,19 @@ interface UpdateCategoryPayload {
   data: Partial<Pick<Category, "name" | "description">>;
 }
 
+interface TransferStockPayload {
+  productId: string;
+  targetProductId: string;
+  quantity: number;
+  note?: string;
+}
+
 interface InventoryStore {
   stores: Store[];
   categories: Category[];
   products: Product[];
+  productTemplates: ProductTemplate[];
+  inventoryMovements: InventoryMovement[];
   isReady: boolean;
   load: () => Promise<void>;
   resetToDefaults: () => Promise<void>;
@@ -499,6 +815,26 @@ interface InventoryStore {
     offerPrice?: number
   ) => Promise<Product | undefined>;
   removeProduct: (productId: string) => Promise<void>;
+  markTemplateUsed: (
+    templateId: string
+  ) => Promise<ProductTemplate | undefined>;
+  markStoreMovementsSynced: (storeId: string) => Promise<number>;
+  adjustProductStock: (
+    productId: string,
+    delta: number,
+    options?: AdjustStockOptions
+  ) => Promise<{ product: Product; movement: InventoryMovement } | undefined>;
+  transferProductStock: (payload: TransferStockPayload) => Promise<{
+    originProduct: Product;
+    destinationProduct: Product;
+    quantity: number;
+  }>;
+}
+
+interface AdjustStockOptions {
+  reason?: InventoryMovementReason;
+  note?: string;
+  markPending?: boolean;
 }
 
 const defaultState: PersistedInventory = {
@@ -506,6 +842,8 @@ const defaultState: PersistedInventory = {
   stores: INITIAL_STORES,
   categories: INITIAL_CATEGORIES,
   products: INITIAL_PRODUCTS,
+  productTemplates: INITIAL_PRODUCT_TEMPLATES,
+  inventoryMovements: INITIAL_INVENTORY_MOVEMENTS,
 };
 
 const readPersistedState = async (): Promise<PersistedInventory | null> => {
@@ -550,15 +888,74 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       stores: next?.stores ?? state.stores,
       categories: next?.categories ?? state.categories,
       products: next?.products ?? state.products,
+      productTemplates: next?.productTemplates ?? state.productTemplates,
+      inventoryMovements: next?.inventoryMovements ?? state.inventoryMovements,
     };
 
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  };
+
+  const registerTemplateFromProduct = async (
+    product: Product,
+    options: {
+      category?: Category | null;
+      store?: Store | null;
+      templateIdUsed?: string;
+    } = {}
+  ): Promise<void> => {
+    if (options.templateIdUsed) {
+      return;
+    }
+
+    const templates = get().productTemplates;
+    const key = toTemplateKey({
+      name: product.name,
+      barcodes: product.barcodes,
+    });
+
+    const now = new Date().toISOString();
+    const existingIndex = templates.findIndex(
+      (template) => toTemplateKey(template) === key
+    );
+
+    if (existingIndex !== -1) {
+      const current = templates[existingIndex];
+      const nextTemplate: ProductTemplate = {
+        ...current,
+        basePrice: product.price,
+        categoryName: options.category?.name ?? current.categoryName,
+        imageUrl: product.imageUrl ?? current.imageUrl,
+        imageAsset: product.imageAsset ?? current.imageAsset,
+        description: product.description ?? current.description,
+        barcodes: product.barcodes ?? current.barcodes,
+        sourceStoreId: options.store?.id ?? current.sourceStoreId,
+        sourceStoreName: options.store?.name ?? current.sourceStoreName,
+        updatedAt: now,
+      };
+
+      const nextTemplates = [...templates];
+      nextTemplates[existingIndex] = nextTemplate;
+      set({ productTemplates: nextTemplates });
+      await persistState({ productTemplates: nextTemplates });
+      return;
+    }
+
+    const template = createTemplateFromProduct(
+      product,
+      options.category,
+      options.store
+    );
+    const nextTemplates = [...templates, template];
+    set({ productTemplates: nextTemplates });
+    await persistState({ productTemplates: nextTemplates });
   };
 
   return {
     stores: [],
     categories: [],
     products: [],
+    productTemplates: [],
+    inventoryMovements: [],
     isReady: false,
     load: async (): Promise<void> => {
       if (get().isReady) return;
@@ -634,20 +1031,33 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       return next;
     },
     removeStore: async (storeId: string): Promise<void> => {
-      const stores = get().stores.filter((store) => store.id !== storeId);
-      if (stores.length === get().stores.length) {
+      const state = get();
+      const hasPendingMovements = state.inventoryMovements.some(
+        (movement) => movement.storeId === storeId && !movement.synced
+      );
+      if (hasPendingMovements) {
+        throw new Error(
+          "Error: No se puede eliminar. Existen movimientos pendientes"
+        );
+      }
+
+      const stores = state.stores.filter((store) => store.id !== storeId);
+      if (stores.length === state.stores.length) {
         return;
       }
 
-      const categories = get().categories.filter(
+      const categories = state.categories.filter(
         (category) => category.storeId !== storeId
       );
-      const products = get().products.filter(
+      const products = state.products.filter(
         (product) => product.storeId !== storeId
       );
+      const inventoryMovements = state.inventoryMovements.filter(
+        (movement) => movement.storeId !== storeId
+      );
 
-      set({ stores, categories, products });
-      await persistState({ stores, categories, products });
+      set({ stores, categories, products, inventoryMovements });
+      await persistState({ stores, categories, products, inventoryMovements });
     },
     addCategory: async ({
       storeId,
@@ -720,19 +1130,33 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       return nextCategory;
     },
     removeCategory: async (categoryId: string): Promise<void> => {
-      const categories = get().categories.filter(
+      const state = get();
+      const categories = state.categories.filter(
         (category) => category.id !== categoryId
       );
-      if (categories.length === get().categories.length) {
+      if (categories.length === state.categories.length) {
         return;
       }
 
-      const products = get().products.filter(
+      const removedProductIds = new Set(
+        state.products
+          .filter((product) => product.categoryId === categoryId)
+          .map((product) => product.id)
+      );
+
+      const products = state.products.filter(
         (product) => product.categoryId !== categoryId
       );
 
-      set({ categories, products });
-      await persistState({ categories, products });
+      const inventoryMovements =
+        removedProductIds.size > 0
+          ? state.inventoryMovements.filter(
+              (movement) => !removedProductIds.has(movement.productId)
+            )
+          : state.inventoryMovements;
+
+      set({ categories, products, inventoryMovements });
+      await persistState({ categories, products, inventoryMovements });
     },
     addProduct: async ({
       storeId,
@@ -747,6 +1171,7 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       offerPrice,
       barcodes,
       discountInfo,
+      templateIdUsed,
     }: AddProductPayload): Promise<Product> => {
       const categories = get().categories;
       const store = get().stores.find((item) => item.id === storeId);
@@ -798,9 +1223,26 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
         barcodes: normalizedBarcodes,
       };
 
+      const currentMovements = get().inventoryMovements;
       const products = [...get().products, newProduct];
-      set({ products });
-      await persistState({ products });
+      const initialMovement = createInitialMovementRecord(newProduct, false);
+      const nextMovements =
+        initialMovement !== null
+          ? [...currentMovements, initialMovement]
+          : null;
+
+      if (nextMovements) {
+        set({ products, inventoryMovements: nextMovements });
+        await persistState({ products, inventoryMovements: nextMovements });
+      } else {
+        set({ products });
+        await persistState({ products });
+      }
+      await registerTemplateFromProduct(newProduct, {
+        category,
+        store,
+        templateIdUsed,
+      });
       return newProduct;
     },
     updateProduct: async ({
@@ -925,6 +1367,65 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       await persistState({ products: nextProducts });
       return next;
     },
+    adjustProductStock: async (
+      productId: string,
+      delta: number,
+      options: AdjustStockOptions = {}
+    ): Promise<
+      { product: Product; movement: InventoryMovement } | undefined
+    > => {
+      const amount = Math.trunc(delta);
+      if (!Number.isFinite(amount) || amount === 0) {
+        throw new Error("Debes ingresar una cantidad distinta de cero.");
+      }
+
+      const state = get();
+      const index = state.products.findIndex(
+        (product) => product.id === productId
+      );
+      if (index === -1) {
+        return undefined;
+      }
+
+      const product = state.products[index];
+      const nextStock = product.stock + amount;
+      if (nextStock < 0) {
+        throw new Error("No hay stock suficiente para registrar la salida.");
+      }
+
+      const markPending = options?.markPending ?? true;
+
+      const updatedProduct: Product = {
+        ...product,
+        stock: nextStock,
+      };
+
+      const movement = createMovementRecord({
+        product,
+        delta: amount,
+        previousStock: product.stock,
+        reason: options.reason,
+        note: options.note,
+        synced: !markPending,
+      });
+
+      const products = [...state.products];
+      products[index] = updatedProduct;
+      const inventoryMovements = [...state.inventoryMovements, movement];
+
+      try {
+        set({ products, inventoryMovements });
+        await persistState({ products, inventoryMovements });
+        return { product: updatedProduct, movement };
+      } catch (error) {
+        set({
+          products: state.products,
+          inventoryMovements: state.inventoryMovements,
+        });
+        console.warn("Error al persistir ajuste de stock", error);
+        throw new Error("Error: no se pudo guardar el ajuste");
+      }
+    },
     setProductStock: async (
       productId: string,
       stock: number
@@ -940,28 +1441,230 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       hasOffer: boolean,
       offerPrice?: number
     ): Promise<Product | undefined> => {
-      if (hasOffer && offerPrice === undefined) {
-        throw new Error("Debes especificar el precio en oferta.");
+      const product = get().products.find((item) => item.id === productId);
+      if (!product) {
+        throw new Error("El producto no existe en el inventario actual.");
       }
+
+      if (hasOffer) {
+        if (offerPrice === undefined) {
+          throw new Error("Debes especificar el precio en oferta.");
+        }
+
+        if (!Number.isFinite(offerPrice) || offerPrice <= 0) {
+          throw new Error("El precio en oferta debe ser mayor a cero.");
+        }
+
+        if (offerPrice >= product.price) {
+          throw new Error(
+            "El precio en oferta debe ser menor al precio base actual."
+          );
+        }
+      }
+
+      const normalizedOffer =
+        hasOffer && offerPrice !== undefined
+          ? Math.round(offerPrice * 100) / 100
+          : undefined;
 
       return get().updateProduct({
         productId,
         data: {
           hasOffer,
-          offerPrice: hasOffer ? offerPrice : undefined,
+          offerPrice: hasOffer ? normalizedOffer : undefined,
         },
       });
     },
     removeProduct: async (productId: string): Promise<void> => {
-      const products = get().products.filter(
+      const state = get();
+      const products = state.products.filter(
         (product) => product.id !== productId
       );
-      if (products.length === get().products.length) {
+      if (products.length === state.products.length) {
         return;
       }
 
-      set({ products });
-      await persistState({ products });
+      const inventoryMovements = state.inventoryMovements.filter(
+        (movement) => movement.productId !== productId
+      );
+
+      set({ products, inventoryMovements });
+      await persistState({ products, inventoryMovements });
+    },
+    markTemplateUsed: async (
+      templateId: string
+    ): Promise<ProductTemplate | undefined> => {
+      const templates = get().productTemplates;
+      const index = templates.findIndex(
+        (template) => template.id === templateId
+      );
+      if (index === -1) {
+        return undefined;
+      }
+
+      const now = new Date().toISOString();
+      const current = templates[index];
+      const nextTemplate: ProductTemplate = {
+        ...current,
+        lastUsedAt: now,
+        updatedAt: now,
+      };
+
+      const nextTemplates = [...templates];
+      nextTemplates[index] = nextTemplate;
+      set({ productTemplates: nextTemplates });
+      await persistState({ productTemplates: nextTemplates });
+      return nextTemplate;
+    },
+    markStoreMovementsSynced: async (storeId: string): Promise<number> => {
+      const movements = get().inventoryMovements;
+      let updated = 0;
+      const nextMovements = movements.map((movement) => {
+        if (movement.storeId !== storeId || movement.synced) {
+          return movement;
+        }
+        updated += 1;
+        return { ...movement, synced: true };
+      });
+
+      if (updated === 0) {
+        return 0;
+      }
+
+      set({ inventoryMovements: nextMovements });
+      await persistState({ inventoryMovements: nextMovements });
+      return updated;
+    },
+    transferProductStock: async ({
+      productId,
+      targetProductId,
+      quantity,
+      note,
+    }: TransferStockPayload): Promise<{
+      originProduct: Product;
+      destinationProduct: Product;
+      quantity: number;
+    }> => {
+      const amount = Math.trunc(quantity);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error(
+          "Debes ingresar una cantidad mayor a cero para transferir."
+        );
+      }
+
+      if (productId === targetProductId) {
+        throw new Error(
+          "Selecciona una tienda de destino diferente para la transferencia."
+        );
+      }
+
+      const state = get();
+      const originIndex = state.products.findIndex(
+        (product) => product.id === productId
+      );
+      if (originIndex === -1) {
+        throw new Error("El producto de origen no existe en el inventario.");
+      }
+
+      const destinationIndex = state.products.findIndex(
+        (product) => product.id === targetProductId
+      );
+      if (destinationIndex === -1) {
+        throw new Error(
+          "El producto de destino no existe en la tienda seleccionada."
+        );
+      }
+
+      const originProduct = state.products[originIndex];
+      const destinationProduct = state.products[destinationIndex];
+
+      if (originProduct.storeId === destinationProduct.storeId) {
+        throw new Error(
+          "La tienda de destino debe ser diferente a la tienda de origen."
+        );
+      }
+
+      if (amount > originProduct.stock) {
+        throw new Error(
+          `Error: stock insuficiente en la tienda de origen. Máximo disponible: ${originProduct.stock}.`
+        );
+      }
+
+      const stores = state.stores;
+      const originStore = stores.find(
+        (store) => store.id === originProduct.storeId
+      );
+      const destinationStore = stores.find(
+        (store) => store.id === destinationProduct.storeId
+      );
+
+      const sanitizedNote = note?.trim() || undefined;
+      const originNote = sanitizedNote
+        ? `${sanitizedNote} → ${destinationStore?.name ?? "Destino"}`
+        : destinationStore
+        ? `Transferencia a ${destinationStore.name}`
+        : undefined;
+      const destinationNote = sanitizedNote
+        ? `${sanitizedNote} ← ${originStore?.name ?? "Origen"}`
+        : originStore
+        ? `Transferencia desde ${originStore.name}`
+        : undefined;
+
+      const updatedOrigin: Product = {
+        ...originProduct,
+        stock: originProduct.stock - amount,
+      };
+
+      const updatedDestination: Product = {
+        ...destinationProduct,
+        stock: destinationProduct.stock + amount,
+      };
+
+      const originMovement = createMovementRecord({
+        product: originProduct,
+        delta: -amount,
+        previousStock: originProduct.stock,
+        reason: "transfer",
+        note: originNote,
+        synced: false,
+        kind: "decrease",
+      });
+
+      const destinationMovement = createMovementRecord({
+        product: destinationProduct,
+        delta: amount,
+        previousStock: destinationProduct.stock,
+        reason: "transfer",
+        note: destinationNote,
+        synced: false,
+        kind: "increase",
+      });
+
+      const products = [...state.products];
+      products[originIndex] = updatedOrigin;
+      products[destinationIndex] = updatedDestination;
+      const inventoryMovements = [
+        ...state.inventoryMovements,
+        originMovement,
+        destinationMovement,
+      ];
+
+      try {
+        set({ products, inventoryMovements });
+        await persistState({ products, inventoryMovements });
+        return {
+          originProduct: updatedOrigin,
+          destinationProduct: updatedDestination,
+          quantity: amount,
+        };
+      } catch (error) {
+        set({
+          products: state.products,
+          inventoryMovements: state.inventoryMovements,
+        });
+        console.warn("Error al persistir transferencia de stock", error);
+        throw new Error("Error: no se pudo completar la transferencia.");
+      }
     },
   };
 });

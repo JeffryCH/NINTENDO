@@ -3,6 +3,7 @@ const path = require("path");
 const sizeOf = require("image-size");
 
 const ICON_RELATIVE_PATH = "./assets/app-icon.png";
+const LEGACY_ICON_RELATIVE_PATH = "./assets/icon.png";
 const DEFAULT_ICON_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9YotZ4kAAAAASUVORK5CYII=";
 
@@ -37,6 +38,7 @@ const validateIcon = (filePath) => {
 
 const ensureIconAsset = (base64) => {
   const iconOutputPath = path.resolve(__dirname, ICON_RELATIVE_PATH);
+  const legacyIconPath = path.resolve(__dirname, LEGACY_ICON_RELATIVE_PATH);
   const hasData = typeof base64 === "string" && base64.trim().length > 0;
   let usedDefault = false;
 
@@ -89,6 +91,15 @@ const ensureIconAsset = (base64) => {
       `[app.config] El icono generado no es válido: ${validation.errors.join(
         ". "
       )}`
+    );
+  }
+
+  try {
+    fs.copyFileSync(iconOutputPath, legacyIconPath);
+  } catch (copyError) {
+    console.warn(
+      "[app.config] No se pudo sincronizar el icono legacy en assets/icon.png:",
+      copyError instanceof Error ? copyError.message : copyError
     );
   }
 

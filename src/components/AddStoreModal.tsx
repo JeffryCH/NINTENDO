@@ -48,8 +48,13 @@ export const AddStoreModal = ({
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [touchedName, setTouchedName] = useState(false);
+  const [touchedLocation, setTouchedLocation] = useState(false);
 
   const isEdit = mode === "edit";
+  const isNameValid = name.trim().length > 0;
+  const isLocationValid = location.trim().length > 0;
+  const isFormValid = isNameValid && isLocationValid;
 
   const applyInitialValues = () => {
     if (isEdit && initialValues) {
@@ -66,6 +71,8 @@ export const AddStoreModal = ({
       setImageAsset(undefined);
     }
     setError(null);
+    setTouchedName(false);
+    setTouchedLocation(false);
   };
 
   useEffect(() => {
@@ -81,8 +88,11 @@ export const AddStoreModal = ({
   };
 
   const handleSubmit = async () => {
-    if (!name.trim() || !location.trim()) {
-      setError("Nombre y ubicación son obligatorios.");
+    setTouchedName(true);
+    setTouchedLocation(true);
+
+    if (!isFormValid) {
+      setError("Completa los campos obligatorios antes de guardar.");
       return;
     }
 
@@ -136,7 +146,13 @@ export const AddStoreModal = ({
               placeholder="Nintendo Store Monterrey"
               placeholderTextColor="rgba(255,255,255,0.4)"
               style={styles.input}
+              onBlur={() => setTouchedName(true)}
             />
+            {touchedName && !isNameValid ? (
+              <Text style={styles.fieldError}>
+                Ingresa un nombre válido para la tienda.
+              </Text>
+            ) : null}
 
             <Text style={styles.label}>Ubicación *</Text>
             <TextInput
@@ -145,7 +161,13 @@ export const AddStoreModal = ({
               placeholder="Centro comercial, ciudad"
               placeholderTextColor="rgba(255,255,255,0.4)"
               style={styles.input}
+              onBlur={() => setTouchedLocation(true)}
             />
+            {touchedLocation && !isLocationValid ? (
+              <Text style={styles.fieldError}>
+                Proporciona la ubicación de la sucursal.
+              </Text>
+            ) : null}
 
             <Text style={styles.label}>Descripción</Text>
             <TextInput
@@ -168,9 +190,12 @@ export const AddStoreModal = ({
             {error ? <Text style={styles.error}>{error}</Text> : null}
 
             <Pressable
-              style={[styles.submitButton, submitting && styles.disabled]}
+              style={[
+                styles.submitButton,
+                (submitting || !isFormValid) && styles.disabled,
+              ]}
               onPress={handleSubmit}
-              disabled={submitting}
+              disabled={submitting || !isFormValid}
             >
               <Text style={styles.submitLabel}>
                 {submitting
@@ -241,6 +266,10 @@ const styles = StyleSheet.create({
   error: {
     color: "#ff6384",
     fontSize: 13,
+  },
+  fieldError: {
+    color: "#ff9aa2",
+    fontSize: 12,
   },
   submitButton: {
     marginTop: 12,

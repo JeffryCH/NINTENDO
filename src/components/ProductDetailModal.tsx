@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Modal,
@@ -9,30 +9,19 @@ import {
   View,
   Image,
   ActivityIndicator,
+  TextInput,
 } from "react-native";
-import { Category, Product, Store } from "@/types/inventory";
+import {
+  Category,
+  InventoryMovement,
+  InventoryMovementReason,
+  Product,
+  Store,
+} from "@/types/inventory";
 import { resolveMediaUri } from "@/utils/media";
 import { formatCurrency } from "@/utils/formatCurrency";
 import { PriceTrend } from "./PriceTrend";
 import { BarcodePreviewModal } from "./BarcodePreviewModal";
-
-interface RelatedAvailability {
-  store: Store;
-  product: Product;
-}
-
-interface ProductDetailModalProps {
-  visible: boolean;
-  product: Product | null;
-  store: Store;
-  categories: Category[];
-  onClose: () => void;
-  onEdit: (product: Product) => void;
-  onDelete: (product: Product) => void;
-  onAdjustStock: (productId: string, delta: number) => Promise<void>;
-  onToggleOffer: (productId: string) => Promise<void>;
-  availability: RelatedAvailability[];
-}
 
 const discountInfoLabels = (
   product: Product
@@ -71,6 +60,38 @@ const discountInfoLabels = (
   return entries;
 };
 
+interface RelatedAvailability {
+  store: Store;
+  product: Product;
+}
+
+interface ProductDetailModalProps {
+  visible: boolean;
+  product: Product | null;
+  store: Store;
+  categories: Category[];
+  onClose: () => void;
+  onEdit: (product: Product) => void;
+  onDelete: (product: Product) => void;
+  onAdjustStock: (
+    productId: string,
+    delta: number,
+    metadata?: { note?: string; reason?: InventoryMovementReason }
+  ) => Promise<void>;
+  onToggleOffer: (
+    productId: string,
+    options: { enable: boolean; offerPrice?: number }
+  ) => Promise<void>;
+  onTransferStock: (payload: {
+    productId: string;
+    targetProductId: string;
+    quantity: number;
+    note?: string;
+  }) => Promise<void>;
+  availability: RelatedAvailability[];
+  movements: InventoryMovement[];
+}
+
 export const ProductDetailModal = ({
   visible,
   product,
@@ -81,15 +102,37 @@ export const ProductDetailModal = ({
   onDelete,
   onAdjustStock,
   onToggleOffer,
+  onTransferStock,
   availability,
+  movements,
 }: ProductDetailModalProps) => {
   const [pendingAction, setPendingAction] = useState<
-    { kind: "stock"; delta: number } | { kind: "offer" } | null
+    | { kind: "stock"; delta: number }
+    | { kind: "offer" }
+    | { kind: "transfer" }
+    | null
   >(null);
   const [barcodePreview, setBarcodePreview] = useState<{
     label: string;
     value: string;
   } | null>(null);
+  const [adjustmentMode, setAdjustmentMode] = useState<
+    "increase" | "decrease" | null
+  >(null);
+  const [adjustmentValue, setAdjustmentValue] = useState("1");
+  const [adjustmentError, setAdjustmentError] = useState<string | null>(null);
+  const [offerModalMode, setOfferModalMode] = useState<
+    "enable" | "disable" | null
+  >(null);
+  const [offerInput, setOfferInput] = useState("");
+  const [offerError, setOfferError] = useState<string | null>(null);
+  const [transferVisible, setTransferVisible] = useState(false);
+  const [transferDestinationId, setTransferDestinationId] = useState<
+    string | null
+  >(null);
+  const [transferQuantity, setTransferQuantity] = useState("1");
+  const [transferNote, setTransferNote] = useState("");
+  const [transferError, setTransferError] = useState<string | null>(null);
 
   const category = useMemo(() => {
     if (!product) return null;
@@ -99,12 +142,45 @@ export const ProductDetailModal = ({
   const previewUri = resolveMediaUri(product?.imageAsset, product?.imageUrl);
   const priceHistory = product?.priceHistory ?? [];
   const discountEntries = product ? discountInfoLabels(product) : [];
+  const recentMovements = useMemo(() => {
+    return movements
+      .slice()
+      .sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )
+      .slice(0, 6);
+  }, [movements]);
 
-  const handleAdjustStock = async (delta: number) => {
-    if (!product) return;
+  useEffect(() => {
+    if (!transferVisible) {
+      return;
+    }
+
+    if (availability.length === 0) {
+      setTransferDestinationId(null);
+      return;
+    }
+
+    const fallback = availability[0]?.product.id ?? null;
+    setTransferDestinationId((current) => {
+      if (!current) {
+        return fallback;
+      }
+      const exists = availability.some((entry) => entry.product.id === current);
+      return exists ? current : fallback;
+    });
+  }, [availability, transferVisible]);
+
+  const handleAdjustStock = async (
+    delta: number,
+    metadata: { reason: InventoryMovementReason; note: string }
+  ): Promise<boolean> => {
+    if (!product) return false;
     setPendingAction({ kind: "stock", delta });
     try {
-      await onAdjustStock(product.id, delta);
+      await onAdjustStock(product.id, delta, metadata);
+      return true;
     } catch (error) {
       Alert.alert(
         "Error",
@@ -112,16 +188,46 @@ export const ProductDetailModal = ({
           ? error.message
           : "No se pudo actualizar el stock."
       );
+      return false;
     } finally {
       setPendingAction(null);
     }
   };
 
-  const handleToggleOffer = async () => {
+  const openOfferModal = (mode: "enable" | "disable") => {
     if (!product) return;
+    setOfferModalMode(mode);
+    setOfferError(null);
+    if (mode === "enable") {
+      const baseline =
+        product.offerPrice !== undefined
+          ? product.offerPrice
+          : Math.max(1, product.price * 0.9);
+      const normalized = Math.round(baseline * 100) / 100;
+      const displayValue = Number.isInteger(normalized)
+        ? String(normalized)
+        : normalized.toFixed(2);
+      setOfferInput(displayValue);
+    } else {
+      setOfferInput("");
+    }
+  };
+
+  const closeOfferModal = () => {
+    setOfferModalMode(null);
+    setOfferInput("");
+    setOfferError(null);
+  };
+
+  const performOfferChange = async (
+    enable: boolean,
+    price?: number
+  ): Promise<boolean> => {
+    if (!product) return false;
     setPendingAction({ kind: "offer" });
     try {
-      await onToggleOffer(product.id);
+      await onToggleOffer(product.id, { enable, offerPrice: price });
+      return true;
     } catch (error) {
       Alert.alert(
         "Error",
@@ -129,14 +235,158 @@ export const ProductDetailModal = ({
           ? error.message
           : "No se pudo actualizar la oferta."
       );
+      return false;
     } finally {
       setPendingAction(null);
+    }
+  };
+
+  const confirmOfferChange = async () => {
+    if (!offerModalMode || !product) return;
+    if (offerModalMode === "enable") {
+      const sanitized = offerInput.trim().replace(",", ".");
+      const numeric = Number.parseFloat(sanitized);
+      if (!Number.isFinite(numeric) || numeric <= 0) {
+        setOfferError("Ingresa un precio válido mayor a cero.");
+        return;
+      }
+      const normalized = Math.round(numeric * 100) / 100;
+      if (normalized >= product.price) {
+        setOfferError("El precio en oferta debe ser menor al precio base.");
+        return;
+      }
+      const success = await performOfferChange(true, normalized);
+      if (success) {
+        closeOfferModal();
+      }
+    } else {
+      const success = await performOfferChange(false);
+      if (success) {
+        closeOfferModal();
+      }
+    }
+  };
+
+  const openTransferModal = () => {
+    if (availability.length === 0) {
+      Alert.alert(
+        "Transferencia no disponible",
+        "No hay tiendas con este producto para recibir unidades."
+      );
+      return;
+    }
+
+    setTransferVisible(true);
+    setTransferQuantity("1");
+    setTransferNote("");
+    setTransferError(null);
+    setTransferDestinationId(availability[0].product.id);
+  };
+
+  const closeTransferModal = () => {
+    setTransferVisible(false);
+    setTransferQuantity("1");
+    setTransferNote("");
+    setTransferError(null);
+  };
+
+  const confirmTransfer = async () => {
+    if (!product || !transferDestinationId) return;
+
+    const sanitizedQuantity = transferQuantity.trim();
+    const quantity = Number.parseInt(sanitizedQuantity, 10);
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setTransferError("Ingresa una cantidad mayor a cero.");
+      return;
+    }
+
+    if (quantity > product.stock) {
+      setTransferError(
+        `Stock insuficiente. Máximo disponible para transferir: ${product.stock}.`
+      );
+      setTransferQuantity(String(product.stock));
+      return;
+    }
+
+    setPendingAction({ kind: "transfer" });
+    try {
+      await onTransferStock({
+        productId: product.id,
+        targetProductId: transferDestinationId,
+        quantity,
+        note: transferNote.trim() ? transferNote.trim() : undefined,
+      });
+      Alert.alert(
+        "Transferencia registrada",
+        `Se trasladaron ${quantity} unidades.`
+      );
+      closeTransferModal();
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "No se pudo completar la transferencia.";
+      setTransferError(message);
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const movementReasonLabel = (movement: InventoryMovement): string => {
+    switch (movement.reason) {
+      case "restock":
+        return "Reposición";
+      case "sale":
+        return "Venta";
+      case "transfer":
+        return "Transferencia";
+      case "initial-load":
+        return "Stock inicial";
+      default:
+        return "Ajuste manual";
     }
   };
 
   if (!product) {
     return null;
   }
+
+  const openAdjustment = (mode: "increase" | "decrease") => {
+    setAdjustmentMode(mode);
+    setAdjustmentValue("1");
+    setAdjustmentError(null);
+  };
+
+  const closeAdjustment = () => {
+    setAdjustmentMode(null);
+    setAdjustmentValue("1");
+    setAdjustmentError(null);
+  };
+
+  const confirmAdjustment = async () => {
+    if (!adjustmentMode || !product) return;
+    const sanitized = adjustmentValue.trim();
+    const quantity = Number.parseInt(sanitized, 10);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setAdjustmentError("Ingresa una cantidad mayor a cero.");
+      return;
+    }
+
+    const delta = adjustmentMode === "increase" ? quantity : -quantity;
+    const metadata = {
+      reason: adjustmentMode === "increase" ? "restock" : "sale",
+      note:
+        adjustmentMode === "increase"
+          ? "Reposición manual desde detalle"
+          : "Venta registrada desde detalle",
+    } as { reason: InventoryMovementReason; note: string };
+
+    const success = await handleAdjustStock(delta, metadata);
+    if (success) {
+      closeAdjustment();
+    }
+  };
 
   return (
     <Modal visible={visible} animationType="slide" transparent>
@@ -306,19 +556,71 @@ export const ProductDetailModal = ({
                 <Text style={styles.stockLabel}>unidades disponibles</Text>
               </View>
               <View style={styles.actionRow}>
-                {[-1, +1, +5].map((delta) => (
-                  <Pressable
-                    key={delta}
-                    style={styles.actionButton}
-                    onPress={() => handleAdjustStock(delta)}
-                    disabled={pendingAction !== null}
-                  >
-                    <Text style={styles.actionLabel}>
-                      {delta > 0 ? `+${delta}` : delta}
-                    </Text>
-                  </Pressable>
-                ))}
+                <Pressable
+                  style={styles.secondaryButton}
+                  onPress={() => openAdjustment("increase")}
+                  disabled={pendingAction !== null}
+                >
+                  <Text style={styles.secondaryLabel}>Sumar unidades</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.secondaryButton, styles.dangerButton]}
+                  onPress={() => openAdjustment("decrease")}
+                  disabled={pendingAction !== null}
+                >
+                  <Text style={[styles.secondaryLabel, styles.dangerLabel]}>
+                    Restar unidades
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.secondaryButton,
+                    availability.length === 0 && styles.disabledButton,
+                  ]}
+                  onPress={openTransferModal}
+                  disabled={pendingAction !== null || availability.length === 0}
+                >
+                  <Text style={styles.secondaryLabel}>Transferir</Text>
+                </Pressable>
               </View>
+              {recentMovements.length > 0 ? (
+                <View style={styles.movementList}>
+                  <Text style={styles.metaLabel}>Movimientos recientes</Text>
+                  {recentMovements.map((movement) => (
+                    <View style={styles.movementRow} key={movement.id}>
+                      <View style={styles.movementHeader}>
+                        <Text
+                          style={[
+                            styles.movementDelta,
+                            movement.delta > 0
+                              ? styles.movementIncrease
+                              : movement.delta < 0
+                              ? styles.movementDecrease
+                              : null,
+                          ]}
+                        >
+                          {movement.delta > 0
+                            ? `+${movement.delta}`
+                            : movement.delta}
+                        </Text>
+                        <Text style={styles.movementTimestamp}>
+                          {new Date(movement.createdAt).toLocaleString()}
+                        </Text>
+                      </View>
+                      <Text style={styles.movementReason}>
+                        {movementReasonLabel(movement)}
+                      </Text>
+                      <Text style={styles.movementStock}>
+                        Stock: {movement.previousStock} →{" "}
+                        {movement.resultingStock}
+                      </Text>
+                      {movement.note ? (
+                        <Text style={styles.movementNote}>{movement.note}</Text>
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
+              ) : null}
             </View>
 
             <View style={styles.section}>
@@ -333,7 +635,9 @@ export const ProductDetailModal = ({
                 </Pressable>
                 <Pressable
                   style={[styles.secondaryButton, styles.offerButton]}
-                  onPress={handleToggleOffer}
+                  onPress={() =>
+                    openOfferModal(product.hasOffer ? "disable" : "enable")
+                  }
                   disabled={pendingAction !== null}
                 >
                   <Text style={styles.offerLabel}>
@@ -387,12 +691,238 @@ export const ProductDetailModal = ({
           </ScrollView>
         </View>
       </View>
+      <Modal
+        visible={adjustmentMode !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeAdjustment}
+      >
+        <View style={styles.adjustBackdrop}>
+          <View style={styles.adjustCard}>
+            <Text style={styles.adjustTitle}>
+              {adjustmentMode === "increase"
+                ? "Sumar unidades"
+                : "Restar unidades"}
+            </Text>
+            <TextInput
+              style={styles.adjustInput}
+              value={adjustmentValue}
+              onChangeText={(text) => {
+                const digits = text.replace(/[^0-9]/g, "");
+                setAdjustmentValue(digits);
+                if (adjustmentError) {
+                  setAdjustmentError(null);
+                }
+              }}
+              placeholder="Cantidad"
+              placeholderTextColor="rgba(255,255,255,0.45)"
+              keyboardType="number-pad"
+              autoFocus
+              returnKeyType="done"
+            />
+            {adjustmentError ? (
+              <Text style={styles.adjustError}>{adjustmentError}</Text>
+            ) : null}
+            <View style={styles.adjustActions}>
+              <Pressable
+                style={[
+                  styles.adjustCancelButton,
+                  pendingAction !== null && styles.adjustDisabled,
+                ]}
+                onPress={closeAdjustment}
+                disabled={pendingAction !== null}
+              >
+                <Text style={styles.adjustCancelLabel}>Cancelar</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.primaryAdjustButton,
+                  pendingAction !== null && styles.adjustDisabled,
+                ]}
+                onPress={confirmAdjustment}
+                disabled={pendingAction !== null}
+              >
+                <Text style={styles.primaryAdjustLabel}>Confirmar</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        visible={offerModalMode !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeOfferModal}
+      >
+        <View style={styles.adjustBackdrop}>
+          <View style={styles.adjustCard}>
+            <Text style={styles.adjustTitle}>
+              {offerModalMode === "enable"
+                ? "Activar oferta"
+                : "Desactivar oferta"}
+            </Text>
+            <Text style={styles.offerHint}>
+              {offerModalMode === "enable"
+                ? `Precio base: ${formatCurrency(product.price)}`
+                : `El precio volverá a ${formatCurrency(product.price)}`}
+            </Text>
+            {offerModalMode === "enable" ? (
+              <>
+                <Text style={styles.offerSubHint}>
+                  Define el precio promocional que se mostrará a los clientes.
+                </Text>
+                <TextInput
+                  style={styles.adjustInput}
+                  value={offerInput}
+                  onChangeText={(text) => {
+                    setOfferInput(text.replace(/[^0-9.,]/g, ""));
+                    if (offerError) {
+                      setOfferError(null);
+                    }
+                  }}
+                  placeholder="Ej. 1499"
+                  placeholderTextColor="rgba(255,255,255,0.45)"
+                  keyboardType="decimal-pad"
+                  returnKeyType="done"
+                  autoFocus
+                />
+                {offerError ? (
+                  <Text style={styles.adjustError}>{offerError}</Text>
+                ) : null}
+              </>
+            ) : product.offerPrice !== undefined ? (
+              <Text style={styles.offerSubHint}>
+                Precio de oferta vigente: {formatCurrency(product.offerPrice)}
+              </Text>
+            ) : null}
+            <View style={styles.adjustActions}>
+              <Pressable
+                style={[
+                  styles.adjustCancelButton,
+                  pendingAction !== null && styles.adjustDisabled,
+                ]}
+                onPress={closeOfferModal}
+                disabled={pendingAction !== null}
+              >
+                <Text style={styles.adjustCancelLabel}>Cancelar</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.primaryAdjustButton,
+                  pendingAction !== null && styles.adjustDisabled,
+                ]}
+                onPress={confirmOfferChange}
+                disabled={pendingAction !== null}
+              >
+                <Text style={styles.primaryAdjustLabel}>
+                  {offerModalMode === "enable" ? "Guardar" : "Confirmar"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
       <BarcodePreviewModal
         visible={barcodePreview !== null}
         label={barcodePreview?.label ?? ""}
         code={barcodePreview?.value ?? null}
         onClose={() => setBarcodePreview(null)}
       />
+      <Modal
+        visible={transferVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeTransferModal}
+      >
+        <View style={styles.adjustBackdrop}>
+          <View style={styles.adjustCard}>
+            <Text style={styles.adjustTitle}>Transferir stock</Text>
+            <Text style={styles.offerSubHint}>
+              Selecciona la tienda destino y las unidades a transferir.
+            </Text>
+            <View style={styles.transferList}>
+              {availability.map((entry) => {
+                const selected = entry.product.id === transferDestinationId;
+                return (
+                  <Pressable
+                    key={entry.product.id}
+                    style={[
+                      styles.transferOption,
+                      selected && styles.transferOptionSelected,
+                    ]}
+                    onPress={() => {
+                      setTransferDestinationId(entry.product.id);
+                      setTransferError(null);
+                    }}
+                  >
+                    <Text style={styles.transferStore}>{entry.store.name}</Text>
+                    <Text style={styles.transferMeta}>
+                      Stock actual: {entry.product.stock}
+                    </Text>
+                    <Text style={styles.transferMeta}>
+                      Precio{" "}
+                      {formatCurrency(
+                        entry.product.hasOffer &&
+                          entry.product.offerPrice !== undefined
+                          ? entry.product.offerPrice
+                          : entry.product.price
+                      )}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <TextInput
+              style={styles.adjustInput}
+              value={transferQuantity}
+              onChangeText={(text) => {
+                setTransferQuantity(text.replace(/[^0-9]/g, ""));
+                if (transferError) {
+                  setTransferError(null);
+                }
+              }}
+              placeholder="Cantidad a transferir"
+              placeholderTextColor="rgba(255,255,255,0.45)"
+              keyboardType="number-pad"
+              autoFocus
+              returnKeyType="done"
+            />
+            <TextInput
+              style={styles.noteInput}
+              value={transferNote}
+              onChangeText={(text) => setTransferNote(text)}
+              placeholder="Nota opcional"
+              placeholderTextColor="rgba(255,255,255,0.45)"
+              returnKeyType="done"
+            />
+            {transferError ? (
+              <Text style={styles.adjustError}>{transferError}</Text>
+            ) : null}
+            <View style={styles.adjustActions}>
+              <Pressable
+                style={[
+                  styles.adjustCancelButton,
+                  pendingAction !== null && styles.adjustDisabled,
+                ]}
+                onPress={closeTransferModal}
+                disabled={pendingAction !== null}
+              >
+                <Text style={styles.adjustCancelLabel}>Cancelar</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.primaryAdjustButton,
+                  pendingAction !== null && styles.adjustDisabled,
+                ]}
+                onPress={confirmTransfer}
+                disabled={pendingAction !== null}
+              >
+                <Text style={styles.primaryAdjustLabel}>Transferir</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </Modal>
   );
 };
@@ -563,15 +1093,47 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 12,
   },
-  actionButton: {
-    backgroundColor: "rgba(255,255,255,0.08)",
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 14,
+  movementList: {
+    marginTop: 16,
+    gap: 12,
   },
-  actionLabel: {
+  movementRow: {
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderRadius: 14,
+    padding: 12,
+    gap: 6,
+  },
+  movementHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  movementDelta: {
+    color: "#ffffff",
+    fontWeight: "700",
+    fontSize: 16,
+  },
+  movementIncrease: {
+    color: "#4cc38a",
+  },
+  movementDecrease: {
+    color: "#ff99b2",
+  },
+  movementTimestamp: {
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 12,
+  },
+  movementReason: {
     color: "#ffffff",
     fontWeight: "600",
+  },
+  movementStock: {
+    color: "rgba(255,255,255,0.75)",
+    fontSize: 13,
+  },
+  movementNote: {
+    color: "rgba(255,255,255,0.6)",
+    fontSize: 12,
   },
   secondaryButton: {
     backgroundColor: "rgba(86,104,255,0.18)",
@@ -596,6 +1158,9 @@ const styles = StyleSheet.create({
   dangerLabel: {
     color: "#ff99b2",
     fontWeight: "700",
+  },
+  disabledButton: {
+    opacity: 0.5,
   },
   availabilityRow: {
     backgroundColor: "rgba(255,255,255,0.04)",
@@ -626,5 +1191,104 @@ const styles = StyleSheet.create({
   },
   pendingLabel: {
     color: "rgba(255,255,255,0.7)",
+  },
+  offerHint: {
+    color: "rgba(255,255,255,0.65)",
+    fontSize: 13,
+  },
+  offerSubHint: {
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 12,
+  },
+  adjustBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "center",
+    padding: 24,
+  },
+  adjustCard: {
+    backgroundColor: "#10162b",
+    borderRadius: 20,
+    padding: 20,
+    gap: 16,
+  },
+  adjustTitle: {
+    color: "#ffffff",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  adjustInput: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    color: "#ffffff",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  adjustError: {
+    color: "#ff99b2",
+    fontSize: 13,
+  },
+  adjustActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 12,
+  },
+  adjustCancelButton: {
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  adjustCancelLabel: {
+    color: "#ffffff",
+    fontWeight: "600",
+  },
+  primaryAdjustButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: "#5668ff",
+  },
+  primaryAdjustLabel: {
+    color: "#ffffff",
+    fontWeight: "700",
+  },
+  adjustDisabled: {
+    opacity: 0.6,
+  },
+  transferList: {
+    gap: 10,
+  },
+  transferOption: {
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderRadius: 14,
+    padding: 14,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  transferOptionSelected: {
+    borderColor: "rgba(86,104,255,0.6)",
+    backgroundColor: "rgba(86,104,255,0.16)",
+  },
+  transferStore: {
+    color: "#ffffff",
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  transferMeta: {
+    color: "rgba(255,255,255,0.65)",
+    fontSize: 12,
+  },
+  noteInput: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    color: "#ffffff",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
   },
 });

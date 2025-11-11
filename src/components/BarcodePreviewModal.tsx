@@ -1,5 +1,12 @@
 import { useMemo } from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  TouchableWithoutFeedback,
+  View,
+} from "react-native";
 import Barcode, {
   type Format as BarcodeFormat,
 } from "@kichiyaki/react-native-barcode-generator";
@@ -51,38 +58,47 @@ export const BarcodePreviewModal = ({
   );
 
   return (
-    <Modal visible={visible} animationType="fade" transparent>
-      <View style={styles.backdrop}>
-        <View style={styles.sheet}>
-          <View style={styles.header}>
-            <Text style={styles.title}>Código de barras</Text>
-            <Pressable onPress={onClose} style={styles.closeButton}>
-              <Text style={styles.closeLabel}>Cerrar</Text>
-            </Pressable>
-          </View>
+    <Modal
+      visible={visible}
+      animationType="fade"
+      transparent
+      onRequestClose={onClose}
+    >
+      <TouchableWithoutFeedback onPress={onClose}>
+        <View style={styles.backdrop}>
+          <TouchableWithoutFeedback onPress={() => {}}>
+            <View style={styles.sheet}>
+              <View style={styles.header}>
+                <Text style={styles.title}>Código de barras</Text>
+                <Pressable onPress={onClose} style={styles.closeButton}>
+                  <Text style={styles.closeLabel}>Cerrar</Text>
+                </Pressable>
+              </View>
 
-          <View style={styles.content}>
-            <Text style={styles.label}>{label}</Text>
-            {normalizedCode ? (
-              <View style={styles.barcodeWrapper}>
-                <Barcode
-                  value={normalizedCode}
-                  format={format}
-                  height={120}
-                  maxWidth={280}
-                />
-                <Text style={styles.codeValue}>{normalizedCode}</Text>
+              <View style={styles.content}>
+                <Text style={styles.label}>{label}</Text>
+                {normalizedCode ? (
+                  <View style={styles.barcodeWrapper}>
+                    <Barcode
+                      value={normalizedCode}
+                      format={format}
+                      height={140}
+                      maxWidth={320}
+                    />
+                    <Text style={styles.codeValue}>{normalizedCode}</Text>
+                  </View>
+                ) : (
+                  <View style={styles.emptyState}>
+                    <Text style={styles.emptyMessage}>
+                      No hay código de barras registrado para este producto.
+                    </Text>
+                  </View>
+                )}
               </View>
-            ) : (
-              <View style={styles.emptyState}>
-                <Text style={styles.emptyMessage}>
-                  No hay código de barras registrado para este producto.
-                </Text>
-              </View>
-            )}
-          </View>
+            </View>
+          </TouchableWithoutFeedback>
         </View>
-      </View>
+      </TouchableWithoutFeedback>
     </Modal>
   );
 };

@@ -8,6 +8,8 @@ import {
   View,
   Pressable,
 } from "react-native";
+import { printToFileAsync } from "expo-print";
+import { isAvailableAsync, shareAsync } from "expo-sharing";
 import { StoreCard } from "@/components/StoreCard";
 import { AddStoreModal } from "@/components/AddStoreModal";
 import { useInventoryStore } from "@/stores/useInventoryStore";
@@ -27,6 +29,7 @@ export default function HomeScreen() {
   );
   const [selectedStore, setSelectedStore] = useState<Store | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reportPending, setReportPending] = useState(false);
 
   const metricsByStore = useMemo(() => {
     const storeMetrics = new Map<
@@ -139,16 +142,104 @@ export default function HomeScreen() {
                 setStoreModalMode("create");
               }
             } catch (removeError) {
-              setError(
+              const message =
                 removeError instanceof Error
                   ? removeError.message
-                  : "No se pudo eliminar la tienda."
-              );
+                  : "No se pudo eliminar la tienda.";
+              setError(message);
+              Alert.alert("Eliminar tienda", message);
             }
           },
         },
       ]
     );
+  };
+
+  const handleGenerateReport = async () => {
+    if (stores.length === 0) {
+      Alert.alert(
+        "Reporte de tiendas",
+        "Agrega al menos una tienda para generar el reporte."
+      );
+      return;
+    }
+
+    setReportPending(true);
+    try {
+      const timestamp = new Date().toLocaleString();
+      const rows = stores
+        .map((store) => {
+          const metrics = metricsByStore.get(store.id) ?? {
+            productCount: 0,
+            stockValue: 0,
+            lowStock: 0,
+          };
+          return `
+            <tr>
+              <td>${store.name}</td>
+              <td>${store.location}</td>
+              <td>${metrics.productCount}</td>
+              <td>${formatCurrency(metrics.stockValue)}</td>
+              <td>${metrics.lowStock}</td>
+            </tr>
+          `;
+        })
+        .join("");
+
+      const html = `<!DOCTYPE html>
+        <html lang="es">
+          <head>
+            <meta charset="utf-8" />
+            <style>
+              body { font-family: 'Roboto', sans-serif; padding: 24px; color: #1b1d2a; }
+              h1 { font-size: 24px; margin-bottom: 4px; }
+              p { margin: 0 0 16px 0; color: #4b4e65; }
+              table { width: 100%; border-collapse: collapse; }
+              th, td { border: 1px solid #d9dbe8; padding: 12px; text-align: left; font-size: 13px; }
+              th { background-color: #eef1ff; font-weight: 700; }
+              tbody tr:nth-child(even) { background-color: #f7f8ff; }
+            </style>
+          </head>
+          <body>
+            <h1>Reporte de tiendas</h1>
+            <p>Generado el ${timestamp}</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Nombre</th>
+                  <th>Ubicación</th>
+                  <th>Productos</th>
+                  <th>Valor inventario</th>
+                  <th>Bajo stock</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows}
+              </tbody>
+            </table>
+          </body>
+        </html>`;
+
+      const file = await printToFileAsync({ html, base64: false });
+      const canShare = await isAvailableAsync();
+      if (canShare) {
+        await shareAsync(file.uri, {
+          mimeType: "application/pdf",
+          dialogTitle: "Compartir reporte de tiendas",
+          UTI: "com.adobe.pdf",
+        });
+      } else {
+        Alert.alert("Reporte de tiendas", `Reporte generado en: ${file.uri}`);
+      }
+    } catch (reportError) {
+      console.error("generate-report-error", reportError);
+      Alert.alert(
+        "Reporte de tiendas",
+        "No se pudo generar el reporte. Intenta nuevamente."
+      );
+    } finally {
+      setReportPending(false);
+    }
   };
 
   return (
@@ -161,12 +252,26 @@ export default function HomeScreen() {
               Gestiona tiendas, stock y ofertas en tiempo real.
             </Text>
           </View>
-          <Pressable
-            style={[styles.primaryButton, styles.headerButton]}
-            onPress={handleOpenCreateModal}
-          >
-            <Text style={styles.primaryButtonLabel}>Añadir tienda</Text>
-          </Pressable>
+          <View style={styles.headerActions}>
+            <Pressable
+              style={[
+                styles.secondaryButton,
+                (reportPending || stores.length === 0) && styles.disabled,
+              ]}
+              onPress={handleGenerateReport}
+              disabled={reportPending || stores.length === 0}
+            >
+              <Text style={styles.secondaryButtonLabel}>
+                {reportPending ? "Generando..." : "Generar reporte"}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.primaryButton, styles.headerButton]}
+              onPress={handleOpenCreateModal}
+            >
+              <Text style={styles.primaryButtonLabel}>Añadir tienda</Text>
+            </Pressable>
+          </View>
         </View>
 
         <View style={styles.metricsRow}>
@@ -314,9 +419,30 @@ const styles = StyleSheet.create({
   headerButton: {
     alignSelf: "flex-start",
   },
+  headerActions: {
+    flexDirection: "row",
+    gap: 12,
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+  },
   primaryButtonLabel: {
     color: "#ffffff",
     fontWeight: "700",
+  },
+  secondaryButton: {
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  secondaryButtonLabel: {
+    color: "rgba(255,255,255,0.86)",
+    fontWeight: "600",
+  },
+  disabled: {
+    opacity: 0.6,
   },
   metricsRow: {
     flexDirection: "row",

@@ -4,6 +4,7 @@ import { StatusBar } from "expo-status-bar";
 import { ActivityIndicator, View, StyleSheet, Text } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { useInventoryStore } from "@/stores/useInventoryStore";
+import { FloatingProductSearch } from "@/components/FloatingProductSearch";
 
 export default function RootLayout() {
   const loadInventory = useInventoryStore((state) => state.load);
@@ -41,6 +42,7 @@ export default function RootLayout() {
           },
         }}
       />
+      <FloatingProductSearch />
     </SafeAreaProvider>
   );
 }
