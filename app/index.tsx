@@ -7,6 +7,7 @@ import {
   Text,
   View,
   Pressable,
+  TextInput,
 } from "react-native";
 import { printToFileAsync } from "expo-print";
 import { isAvailableAsync, shareAsync } from "expo-sharing";
@@ -30,6 +31,11 @@ export default function HomeScreen() {
   const [selectedStore, setSelectedStore] = useState<Store | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reportPending, setReportPending] = useState(false);
+  const [storeSearchQuery, setStoreSearchQuery] = useState("");
+  const [onlyAlertStores, setOnlyAlertStores] = useState(false);
+  const [storeSortOption, setStoreSortOption] = useState<
+    "name-asc" | "value-desc" | "products-desc"
+  >("name-asc");
 
   const metricsByStore = useMemo(() => {
     const storeMetrics = new Map<
@@ -82,6 +88,73 @@ export default function HomeScreen() {
 
     return { totalProducts, totalStock, inventoryValue, lowStock };
   }, [products]);
+
+  const storeEntries = useMemo(
+    () =>
+      stores.map((store) => ({
+        store,
+        metrics: metricsByStore.get(store.id) ?? {
+          productCount: 0,
+          stockValue: 0,
+          lowStock: 0,
+        },
+      })),
+    [stores, metricsByStore]
+  );
+
+  const normalizedStoreQuery = storeSearchQuery.trim().toLowerCase();
+
+  const filteredStores = useMemo(() => {
+    return storeEntries.filter((entry) => {
+      if (normalizedStoreQuery) {
+        const nameMatch = entry.store.name
+          .trim()
+          .toLowerCase()
+          .includes(normalizedStoreQuery);
+        const locationMatch = entry.store.location
+          ?.trim()
+          .toLowerCase()
+          .includes(normalizedStoreQuery);
+        if (!nameMatch && !locationMatch) {
+          return false;
+        }
+      }
+
+      if (onlyAlertStores && entry.metrics.lowStock === 0) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [storeEntries, normalizedStoreQuery, onlyAlertStores]);
+
+  const sortedStores = useMemo(() => {
+    const sorted = [...filteredStores];
+    sorted.sort((a, b) => {
+      switch (storeSortOption) {
+        case "value-desc":
+          if (b.metrics.stockValue !== a.metrics.stockValue) {
+            return b.metrics.stockValue - a.metrics.stockValue;
+          }
+          break;
+        case "products-desc":
+          if (b.metrics.productCount !== a.metrics.productCount) {
+            return b.metrics.productCount - a.metrics.productCount;
+          }
+          break;
+        default:
+          return a.store.name.localeCompare(b.store.name);
+      }
+      return a.store.name.localeCompare(b.store.name);
+    });
+    return sorted;
+  }, [filteredStores, storeSortOption]);
+
+  const storeSearchActive = normalizedStoreQuery.length > 0;
+  const storeFiltersActive = onlyAlertStores;
+  const canResetStoreFilters =
+    storeSearchActive || storeFiltersActive || storeSortOption !== "name-asc";
+  const filteredStoresEmpty = stores.length > 0 && sortedStores.length === 0;
 
   const handleSubmitStore = async (payload: {
     name: string;
@@ -242,6 +315,12 @@ export default function HomeScreen() {
     }
   };
 
+  const clearStoreFilters = () => {
+    setStoreSearchQuery("");
+    setOnlyAlertStores(false);
+    setStoreSortOption("name-asc");
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -297,6 +376,86 @@ export default function HomeScreen() {
           </View>
         </View>
 
+        <View style={styles.storeControls}>
+          <View style={styles.storeSearchRow}>
+            <TextInput
+              style={[styles.storeSearchInput, styles.storeSearchField]}
+              placeholder="Buscar tienda por nombre o ubicación"
+              placeholderTextColor="rgba(255,255,255,0.45)"
+              value={storeSearchQuery}
+              onChangeText={setStoreSearchQuery}
+              autoCorrect={false}
+              autoCapitalize="words"
+              returnKeyType="search"
+              selectionColor="#5668ff"
+              keyboardAppearance="dark"
+            />
+            <Pressable
+              style={[
+                styles.storeClearButton,
+                !canResetStoreFilters && styles.storeClearButtonDisabled,
+              ]}
+              onPress={clearStoreFilters}
+              disabled={!canResetStoreFilters}
+            >
+              <Text
+                style={[
+                  styles.storeClearLabel,
+                  !canResetStoreFilters && styles.storeClearLabelDisabled,
+                ]}
+              >
+                Limpiar
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.storeFilterRow}>
+            <Pressable
+              style={[
+                styles.storeFilterChip,
+                onlyAlertStores && styles.storeFilterChipActive,
+              ]}
+              onPress={() => setOnlyAlertStores((current) => !current)}
+            >
+              <Text
+                style={[
+                  styles.storeFilterChipLabel,
+                  onlyAlertStores && styles.storeFilterChipLabelActive,
+                ]}
+              >
+                Solo con alerta de stock
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.storeSortRow}>
+            {[
+              { key: "name-asc" as const, label: "Nombre A-Z" },
+              { key: "value-desc" as const, label: "Valor (↓)" },
+              { key: "products-desc" as const, label: "Productos (↓)" },
+            ].map((option) => (
+              <Pressable
+                key={option.key}
+                style={[
+                  styles.storeSortChip,
+                  storeSortOption === option.key && styles.storeSortChipActive,
+                ]}
+                onPress={() => setStoreSortOption(option.key)}
+              >
+                <Text
+                  style={[
+                    styles.storeSortChipLabel,
+                    storeSortOption === option.key &&
+                      styles.storeSortChipLabelActive,
+                  ]}
+                >
+                  {option.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         <View style={styles.sectionHeader}>
@@ -307,47 +466,59 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.list}>
-          {stores.map((store) => {
-            const metrics = metricsByStore.get(store.id) ?? {
-              productCount: 0,
-              stockValue: 0,
-              lowStock: 0,
-            };
-            return (
-              <View key={store.id} style={styles.storeBlock}>
-                <StoreCard
-                  store={store}
-                  productCount={metrics.productCount}
-                  inventoryValue={metrics.stockValue}
-                  lowStockCount={metrics.lowStock}
-                />
-                <View style={styles.storeActions}>
-                  <Pressable
-                    style={styles.storeActionButton}
-                    onPress={() => handleEditStore(store)}
-                  >
-                    <Text style={styles.storeActionLabel}>Editar</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.storeActionButton, styles.storeDeleteButton]}
-                    onPress={() => handleDeleteStore(store)}
-                  >
-                    <Text
-                      style={[styles.storeActionLabel, styles.storeDeleteLabel]}
+          {sortedStores.length > 0
+            ? sortedStores.map(({ store, metrics }) => (
+                <View key={store.id} style={styles.storeBlock}>
+                  <StoreCard
+                    store={store}
+                    productCount={metrics.productCount}
+                    inventoryValue={metrics.stockValue}
+                    lowStockCount={metrics.lowStock}
+                  />
+                  <View style={styles.storeActions}>
+                    <Pressable
+                      style={styles.storeActionButton}
+                      onPress={() => handleEditStore(store)}
                     >
-                      Eliminar
-                    </Text>
-                  </Pressable>
+                      <Text style={styles.storeActionLabel}>Editar</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[
+                        styles.storeActionButton,
+                        styles.storeDeleteButton,
+                      ]}
+                      onPress={() => handleDeleteStore(store)}
+                    >
+                      <Text
+                        style={[
+                          styles.storeActionLabel,
+                          styles.storeDeleteLabel,
+                        ]}
+                      >
+                        Eliminar
+                      </Text>
+                    </Pressable>
+                  </View>
                 </View>
-              </View>
-            );
-          })}
+              ))
+            : null}
           {stores.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyTitle}>Sin tiendas registradas</Text>
               <Text style={styles.emptySubtitle}>
                 Agrega la primera tienda para comenzar a catalogar productos,
                 categorías y ofertas.
+              </Text>
+            </View>
+          ) : null}
+          {filteredStoresEmpty ? (
+            <View style={styles.filteredEmpty}>
+              <Text style={styles.filteredEmptyTitle}>
+                No hay coincidencias
+              </Text>
+              <Text style={styles.filteredEmptySubtitle}>
+                Ajusta la búsqueda o desactiva los filtros para ver nuevamente
+                las tiendas.
               </Text>
             </View>
           ) : null}
@@ -475,6 +646,94 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
   },
+  storeControls: {
+    backgroundColor: "rgba(16,22,43,0.85)",
+    borderRadius: 18,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    gap: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  storeSearchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  storeSearchInput: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    color: "#ffffff",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  storeSearchField: {
+    flex: 1,
+  },
+  storeClearButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  storeClearButtonDisabled: {
+    opacity: 0.5,
+  },
+  storeClearLabel: {
+    color: "#d8dcff",
+    fontWeight: "600",
+  },
+  storeClearLabelDisabled: {
+    color: "rgba(216,220,255,0.6)",
+  },
+  storeFilterRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  storeFilterChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  storeFilterChipActive: {
+    backgroundColor: "rgba(86,104,255,0.26)",
+    borderWidth: 1,
+    borderColor: "rgba(86,104,255,0.75)",
+  },
+  storeFilterChipLabel: {
+    color: "rgba(216,220,255,0.88)",
+    fontWeight: "600",
+  },
+  storeFilterChipLabelActive: {
+    color: "#ffffff",
+  },
+  storeSortRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  storeSortChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  storeSortChipActive: {
+    backgroundColor: "rgba(86,104,255,0.24)",
+    borderWidth: 1,
+    borderColor: "rgba(86,104,255,0.75)",
+  },
+  storeSortChipLabel: {
+    color: "rgba(216,220,255,0.88)",
+    fontWeight: "600",
+  },
+  storeSortChipLabelActive: {
+    color: "#ffffff",
+  },
   sectionHeader: {
     gap: 4,
   },
@@ -533,5 +792,21 @@ const styles = StyleSheet.create({
   emptySubtitle: {
     color: "rgba(255,255,255,0.6)",
     textAlign: "center",
+  },
+  filteredEmpty: {
+    backgroundColor: "rgba(16,22,43,0.8)",
+    borderRadius: 18,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    gap: 6,
+  },
+  filteredEmptyTitle: {
+    color: "#ffffff",
+    fontWeight: "700",
+    fontSize: 16,
+  },
+  filteredEmptySubtitle: {
+    color: "rgba(255,255,255,0.7)",
   },
 });

@@ -2,6 +2,24 @@ export type UUID = string;
 
 export type MediaSourceType = "url" | "camera" | "library";
 
+export type ProductUnit =
+  | "unit"
+  | "piece"
+  | "box"
+  | "pair"
+  | "kilogram"
+  | "gram"
+  | "liter"
+  | "milliliter";
+
+export interface ProductChangeLogEntry {
+  id: UUID;
+  productId: UUID;
+  performedAt: string;
+  summary: string;
+  changes: string[];
+}
+
 export interface MediaAsset {
   uri: string;
   type: MediaSourceType;
@@ -47,6 +65,8 @@ export interface Product {
   storeId: UUID;
   categoryId: UUID;
   name: string;
+  unit: ProductUnit;
+  templateId?: UUID;
   price: number;
   previousPrice?: number;
   priceUpdatedAt: string;
@@ -59,22 +79,35 @@ export interface Product {
   offerPrice?: number;
   discountInfo?: ProductDiscountInfo;
   barcodes?: ProductBarcodes;
+  changeLog: ProductChangeLogEntry[];
 }
 
 export interface ProductTemplate {
   id: UUID;
   name: string;
+  unit: ProductUnit;
   categoryName?: string;
   basePrice: number;
+  masterSku: string;
+  associatedUpcCodes: string[];
   imageUrl?: string;
   imageAsset?: MediaAsset;
   description?: string;
   barcodes?: ProductBarcodes;
   sourceStoreId?: UUID;
   sourceStoreName?: string;
+  storeReferences: ProductTemplateStoreReference[];
   createdAt: string;
   updatedAt: string;
   lastUsedAt?: string;
+}
+
+export interface ProductTemplateStoreReference {
+  storeId: UUID;
+  storeName?: string;
+  upc?: string;
+  box?: string;
+  lastSeenAt: string;
 }
 
 export interface OfferSummary {

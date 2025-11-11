@@ -1,6 +1,7 @@
 import { describe, it, expect } from "@jest/globals";
 import { summarizeCategoryProducts } from "@/utils/categoryMetrics";
 import type { Product } from "@/types/inventory";
+import { DEFAULT_PRODUCT_UNIT } from "@/utils/productUnits";
 
 const buildProduct = (overrides: Partial<Product> = {}): Product => {
   return {
@@ -8,6 +9,7 @@ const buildProduct = (overrides: Partial<Product> = {}): Product => {
     storeId: overrides.storeId ?? "store-1",
     categoryId: overrides.categoryId ?? "category-1",
     name: overrides.name ?? "Producto de prueba",
+    unit: overrides.unit ?? DEFAULT_PRODUCT_UNIT,
     price: overrides.price ?? 100,
     previousPrice: overrides.previousPrice,
     priceUpdatedAt: overrides.priceUpdatedAt ?? new Date().toISOString(),
@@ -20,6 +22,7 @@ const buildProduct = (overrides: Partial<Product> = {}): Product => {
     offerPrice: overrides.offerPrice,
     discountInfo: overrides.discountInfo,
     barcodes: overrides.barcodes,
+    changeLog: overrides.changeLog ?? [],
   };
 };
 

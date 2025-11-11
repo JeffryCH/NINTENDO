@@ -76,6 +76,12 @@ export default function StoreDetailScreen() {
   const normalizedProductIdParam = sanitizeProductIdParam(productIdParam);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [minStockFilter, setMinStockFilter] = useState("");
+  const [maxStockFilter, setMaxStockFilter] = useState("");
+  const [offerFilter, setOfferFilter] = useState<"all" | "offers">("all");
+  const [sortOption, setSortOption] = useState<
+    "name-asc" | "price-desc" | "stock-desc"
+  >("name-asc");
   const [storeModalVisible, setStoreModalVisible] = useState(false);
   const [categoryModalState, setCategoryModalState] = useState<{
     visible: boolean;
@@ -147,7 +153,7 @@ export default function StoreDetailScreen() {
     return map;
   }, [storeCollection]);
 
-  const filteredProducts = useMemo(() => {
+  const productsMatchingQuery = useMemo(() => {
     const trimmedQuery = searchQuery.trim();
     if (!trimmedQuery) {
       return products;
@@ -169,14 +175,81 @@ export default function StoreDetailScreen() {
     });
   }, [products, categoryMap, searchQuery]);
 
+  const parsedMinStock = useMemo(() => {
+    const trimmed = minStockFilter.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const value = Number(trimmed);
+    return Number.isFinite(value) ? value : null;
+  }, [minStockFilter]);
+
+  const parsedMaxStock = useMemo(() => {
+    const trimmed = maxStockFilter.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const value = Number(trimmed);
+    return Number.isFinite(value) ? value : null;
+  }, [maxStockFilter]);
+
+  const filteredProducts = useMemo(() => {
+    return productsMatchingQuery.filter((product) => {
+      if (offerFilter === "offers" && !product.hasOffer) {
+        return false;
+      }
+      if (parsedMinStock !== null && product.stock < parsedMinStock) {
+        return false;
+      }
+      if (parsedMaxStock !== null && product.stock > parsedMaxStock) {
+        return false;
+      }
+      return true;
+    });
+  }, [productsMatchingQuery, offerFilter, parsedMinStock, parsedMaxStock]);
+
+  const sortedProducts = useMemo(() => {
+    const sorted = [...filteredProducts];
+    sorted.sort((a, b) => {
+      switch (sortOption) {
+        case "price-desc": {
+          const priceA =
+            a.hasOffer && a.offerPrice !== undefined ? a.offerPrice : a.price;
+          const priceB =
+            b.hasOffer && b.offerPrice !== undefined ? b.offerPrice : b.price;
+          if (priceB !== priceA) {
+            return priceB - priceA;
+          }
+          return a.name.localeCompare(b.name);
+        }
+        case "stock-desc":
+          if (b.stock !== a.stock) {
+            return b.stock - a.stock;
+          }
+          return a.name.localeCompare(b.name);
+        default:
+          return a.name.localeCompare(b.name);
+      }
+    });
+    return sorted;
+  }, [filteredProducts, sortOption]);
+
+  const hasActiveFilters = useMemo(
+    () =>
+      offerFilter === "offers" ||
+      minStockFilter.trim().length > 0 ||
+      maxStockFilter.trim().length > 0,
+    [offerFilter, minStockFilter, maxStockFilter]
+  );
+
   const groupedProducts = useMemo(() => {
-    const map = new Map<string, typeof filteredProducts>();
+    const map = new Map<string, typeof sortedProducts>();
 
     categories.forEach((category) => {
       map.set(category.id, []);
     });
 
-    filteredProducts.forEach((product) => {
+    sortedProducts.forEach((product) => {
       const bucket = map.get(product.categoryId);
       if (bucket) {
         bucket.push(product);
@@ -185,7 +258,7 @@ export default function StoreDetailScreen() {
       }
     });
 
-    if (searchQuery.trim()) {
+    if (searchQuery.trim() || hasActiveFilters) {
       for (const [key, value] of Array.from(map.entries())) {
         if (value.length === 0) {
           map.delete(key);
@@ -194,7 +267,7 @@ export default function StoreDetailScreen() {
     }
 
     return map;
-  }, [categories, filteredProducts, searchQuery]);
+  }, [categories, sortedProducts, searchQuery, hasActiveFilters]);
 
   const groupedEntries = useMemo(
     () => Array.from(groupedProducts.entries()),
@@ -939,6 +1012,13 @@ export default function StoreDetailScreen() {
     }
   };
 
+  const clearProductFilters = () => {
+    setMinStockFilter("");
+    setMaxStockFilter("");
+    setOfferFilter("all");
+    setSortOption("name-asc");
+  };
+
   useEffect(() => {
     if (!categorySummaryState.visible || !categorySummaryState.summary) {
       return;
@@ -977,6 +1057,13 @@ export default function StoreDetailScreen() {
     categorySummaryState.visible,
     categorySummaryState.summary,
   ]);
+
+  const stockRangeAllActive =
+    minStockFilter.trim().length === 0 && maxStockFilter.trim().length === 0;
+  const stockRangeLowActive =
+    minStockFilter.trim() === "0" && maxStockFilter.trim() === "5";
+  const offerFilterActive = offerFilter === "offers";
+  const canResetFilters = hasActiveFilters || sortOption !== "name-asc";
 
   return (
     <SafeAreaView style={styles.container}>
@@ -1200,18 +1287,165 @@ export default function StoreDetailScreen() {
               <Text style={styles.scanSearchLabel}>Escanear</Text>
             </Pressable>
           </View>
+
+          <View style={styles.filterBlock}>
+            <View style={styles.filterHeader}>
+              <Text style={styles.filterTitle}>Control de inventario</Text>
+              <Pressable
+                style={[
+                  styles.clearFiltersButton,
+                  !canResetFilters && styles.clearFiltersButtonDisabled,
+                ]}
+                onPress={clearProductFilters}
+                disabled={!canResetFilters}
+              >
+                <Text
+                  style={[
+                    styles.clearFiltersLabel,
+                    !canResetFilters && styles.clearFiltersLabelDisabled,
+                  ]}
+                >
+                  Limpiar filtros
+                </Text>
+              </Pressable>
+            </View>
+
+            <Text style={styles.filterLabel}>Rango de stock</Text>
+            <View style={styles.filterChipsRow}>
+              <Pressable
+                style={[
+                  styles.filterChip,
+                  stockRangeAllActive && styles.filterChipActive,
+                ]}
+                onPress={() => {
+                  setMinStockFilter("");
+                  setMaxStockFilter("");
+                }}
+              >
+                <Text
+                  style={[
+                    styles.filterChipLabel,
+                    stockRangeAllActive && styles.filterChipLabelActive,
+                  ]}
+                >
+                  Todo stock
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.filterChip,
+                  stockRangeLowActive && styles.filterChipActive,
+                ]}
+                onPress={() => {
+                  setMinStockFilter("0");
+                  setMaxStockFilter("5");
+                }}
+              >
+                <Text
+                  style={[
+                    styles.filterChipLabel,
+                    stockRangeLowActive && styles.filterChipLabelActive,
+                  ]}
+                >
+                  0 - 5
+                </Text>
+              </Pressable>
+            </View>
+            <View style={styles.stockInputsRow}>
+              <TextInput
+                style={[styles.stockInput, styles.stockField]}
+                placeholder="Mín"
+                placeholderTextColor="rgba(255,255,255,0.45)"
+                value={minStockFilter}
+                onChangeText={(text) =>
+                  setMinStockFilter(text.replace(/[^0-9]/g, ""))
+                }
+                keyboardType="number-pad"
+                returnKeyType="done"
+                selectionColor="#5668ff"
+                keyboardAppearance="dark"
+              />
+              <Text style={styles.rangeSeparator}>-</Text>
+              <TextInput
+                style={[styles.stockInput, styles.stockField]}
+                placeholder="Máx"
+                placeholderTextColor="rgba(255,255,255,0.45)"
+                value={maxStockFilter}
+                onChangeText={(text) =>
+                  setMaxStockFilter(text.replace(/[^0-9]/g, ""))
+                }
+                keyboardType="number-pad"
+                returnKeyType="done"
+                selectionColor="#5668ff"
+                keyboardAppearance="dark"
+              />
+            </View>
+
+            <Text style={styles.filterLabel}>Estado</Text>
+            <View style={styles.filterChipsRow}>
+              <Pressable
+                style={[
+                  styles.filterChip,
+                  offerFilterActive && styles.filterChipActive,
+                ]}
+                onPress={() =>
+                  setOfferFilter((current) =>
+                    current === "offers" ? "all" : "offers"
+                  )
+                }
+              >
+                <Text
+                  style={[
+                    styles.filterChipLabel,
+                    offerFilterActive && styles.filterChipLabelActive,
+                  ]}
+                >
+                  Solo ofertas
+                </Text>
+              </Pressable>
+            </View>
+
+            <Text style={styles.filterLabel}>Ordenar por</Text>
+            <View style={styles.sortRow}>
+              {[
+                { key: "name-asc" as const, label: "Nombre A-Z" },
+                { key: "price-desc" as const, label: "Precio (↓)" },
+                { key: "stock-desc" as const, label: "Stock (↓)" },
+              ].map((option) => (
+                <Pressable
+                  key={option.key}
+                  style={[
+                    styles.sortChip,
+                    sortOption === option.key && styles.sortChipActive,
+                  ]}
+                  onPress={() => setSortOption(option.key)}
+                >
+                  <Text
+                    style={[
+                      styles.sortChipLabel,
+                      sortOption === option.key && styles.sortChipLabelActive,
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
         </View>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        {groupedEntries.length === 0 && isSearching && products.length > 0 ? (
+        {groupedEntries.length === 0 &&
+        (isSearching || hasActiveFilters) &&
+        products.length > 0 ? (
           <View style={styles.noResults}>
             <Text style={styles.noResultsTitle}>
               No se encontraron productos
             </Text>
             <Text style={styles.noResultsSubtitle}>
-              Ajusta los términos de búsqueda o limpia el filtro para ver todo
-              el inventario.
+              Ajusta la búsqueda o modifica los filtros para ver nuevamente el
+              inventario.
             </Text>
           </View>
         ) : null}
@@ -1596,6 +1830,117 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+  },
+  filterBlock: {
+    marginTop: 16,
+    backgroundColor: "rgba(16,22,43,0.8)",
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    gap: 12,
+  },
+  filterHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  filterTitle: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  clearFiltersButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  clearFiltersButtonDisabled: {
+    opacity: 0.5,
+  },
+  clearFiltersLabel: {
+    color: "#d8dcff",
+    fontWeight: "600",
+    fontSize: 13,
+  },
+  clearFiltersLabelDisabled: {
+    color: "rgba(216,220,255,0.6)",
+  },
+  filterLabel: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  filterChipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  filterChipActive: {
+    backgroundColor: "rgba(86,104,255,0.28)",
+    borderWidth: 1,
+    borderColor: "rgba(86,104,255,0.8)",
+  },
+  filterChipLabel: {
+    color: "rgba(216,220,255,0.88)",
+    fontWeight: "600",
+  },
+  filterChipLabelActive: {
+    color: "#ffffff",
+  },
+  stockInputsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  stockInput: {
+    flex: 1,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    color: "#ffffff",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  stockField: {
+    maxWidth: 90,
+  },
+  rangeSeparator: {
+    color: "rgba(255,255,255,0.6)",
+    fontWeight: "700",
+  },
+  sortRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  sortChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  sortChipActive: {
+    backgroundColor: "rgba(86,104,255,0.24)",
+    borderWidth: 1,
+    borderColor: "rgba(86,104,255,0.8)",
+  },
+  sortChipLabel: {
+    color: "rgba(216,220,255,0.88)",
+    fontWeight: "600",
+  },
+  sortChipLabelActive: {
+    color: "#ffffff",
   },
   searchInput: {
     backgroundColor: "rgba(255,255,255,0.08)",

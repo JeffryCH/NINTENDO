@@ -6,6 +6,7 @@ import {
   findStoreMatchesByBarcode,
   productMatchesQuery,
 } from "@/utils/productSearch";
+import { DEFAULT_PRODUCT_UNIT } from "@/utils/productUnits";
 
 const createSnapshot = (price: number): ProductPriceSnapshot => ({
   price,
@@ -19,6 +20,7 @@ const makeProduct = (overrides: Partial<Product>): Product => {
     storeId: overrides.storeId ?? "store-1",
     categoryId: overrides.categoryId ?? "category-1",
     name: overrides.name ?? "Joy-Con Azul",
+    unit: overrides.unit ?? DEFAULT_PRODUCT_UNIT,
     price,
     previousPrice: overrides.previousPrice,
     priceUpdatedAt: overrides.priceUpdatedAt ?? new Date().toISOString(),
@@ -31,6 +33,7 @@ const makeProduct = (overrides: Partial<Product>): Product => {
     offerPrice: overrides.offerPrice,
     discountInfo: overrides.discountInfo,
     barcodes: overrides.barcodes,
+    changeLog: overrides.changeLog ?? [],
   };
 };
 

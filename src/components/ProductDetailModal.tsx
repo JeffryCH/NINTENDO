@@ -22,6 +22,11 @@ import { resolveMediaUri } from "@/utils/media";
 import { formatCurrency } from "@/utils/formatCurrency";
 import { PriceTrend } from "./PriceTrend";
 import { BarcodePreviewModal } from "./BarcodePreviewModal";
+import {
+  resolveProductUnitLabel,
+  resolveProductUnitPluralLabel,
+  resolveProductUnitLabelForQuantity,
+} from "@/utils/productUnits";
 
 const discountInfoLabels = (
   product: Product
@@ -151,6 +156,10 @@ export const ProductDetailModal = ({
       )
       .slice(0, 6);
   }, [movements]);
+  const changeLogEntries = useMemo(() => {
+    if (!product) return [];
+    return product.changeLog.slice().reverse().slice(0, 5);
+  }, [product]);
 
   useEffect(() => {
     if (!transferVisible) {
@@ -319,7 +328,10 @@ export const ProductDetailModal = ({
       });
       Alert.alert(
         "Transferencia registrada",
-        `Se trasladaron ${quantity} unidades.`
+        `Se trasladaron ${quantity} ${resolveProductUnitLabelForQuantity(
+          product.unit,
+          quantity
+        ).toLowerCase()}.`
       );
       closeTransferModal();
     } catch (error) {
@@ -351,6 +363,10 @@ export const ProductDetailModal = ({
   if (!product) {
     return null;
   }
+
+  const unitLabel = resolveProductUnitLabel(product.unit);
+  const unitPluralLabel = resolveProductUnitPluralLabel(product.unit);
+  const totalChangeLogEntries = product.changeLog.length;
 
   const openAdjustment = (mode: "increase" | "decrease") => {
     setAdjustmentMode(mode);
@@ -418,6 +434,10 @@ export const ProductDetailModal = ({
                   <Text style={styles.infoValue}>{category.name}</Text>
                 </View>
               ) : null}
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>Unidad de venta</Text>
+                <Text style={styles.infoValue}>{unitLabel}</Text>
+              </View>
               {product.description ? (
                 <View style={styles.descriptionBox}>
                   <Text style={styles.descriptionText}>
@@ -550,10 +570,57 @@ export const ProductDetailModal = ({
             ) : null}
 
             <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Historial de cambios</Text>
+              {changeLogEntries.length === 0 ? (
+                <Text style={styles.metaLabel}>
+                  Aún no hay registros de cambios para este producto.
+                </Text>
+              ) : (
+                <>
+                  <Text style={styles.metaLabel}>
+                    {totalChangeLogEntries > changeLogEntries.length
+                      ? `Mostrando últimos ${changeLogEntries.length} de ${totalChangeLogEntries} cambios`
+                      : "Últimos cambios registrados"}
+                  </Text>
+                  <View style={styles.changeLogList}>
+                    {changeLogEntries.map((entry) => (
+                      <View style={styles.changeLogCard} key={entry.id}>
+                        <View style={styles.changeLogHeader}>
+                          <Text style={styles.changeLogSummary}>
+                            {entry.summary}
+                          </Text>
+                          <Text style={styles.changeLogTimestamp}>
+                            {new Date(entry.performedAt).toLocaleString()}
+                          </Text>
+                        </View>
+                        {entry.changes.length > 0 ? (
+                          <View style={styles.changeLogChanges}>
+                            {entry.changes.slice(0, 4).map((line, index) => (
+                              <Text
+                                style={styles.changeLogChangeLabel}
+                                key={`${entry.id}-${index}`}
+                              >
+                                • {line}
+                              </Text>
+                            ))}
+                          </View>
+                        ) : null}
+                      </View>
+                    ))}
+                  </View>
+                </>
+              )}
+            </View>
+
+            <View style={styles.section}>
               <Text style={styles.sectionTitle}>Stock</Text>
               <View style={styles.stockRow}>
                 <Text style={styles.stockValue}>{product.stock}</Text>
-                <Text style={styles.stockLabel}>unidades disponibles</Text>
+                <Text style={styles.stockLabel}>
+                  {product.stock === 1
+                    ? `${unitLabel.toLowerCase()} disponible`
+                    : `${unitPluralLabel.toLowerCase()} disponibles`}
+                </Text>
               </View>
               <View style={styles.actionRow}>
                 <Pressable
@@ -659,26 +726,33 @@ export const ProductDetailModal = ({
                 <Text style={styles.sectionTitle}>
                   Disponible en otras tiendas
                 </Text>
-                {availability.map((entry) => (
-                  <View style={styles.availabilityRow} key={entry.product.id}>
-                    <View style={styles.availabilityHeader}>
-                      <Text style={styles.availabilityStore}>
-                        {entry.store.name}
-                      </Text>
-                      <Text style={styles.availabilityStock}>
-                        {entry.product.stock} en stock
+                {availability.map((entry) => {
+                  const availabilityUnit = resolveProductUnitLabelForQuantity(
+                    entry.product.unit,
+                    entry.product.stock
+                  ).toLowerCase();
+
+                  return (
+                    <View style={styles.availabilityRow} key={entry.product.id}>
+                      <View style={styles.availabilityHeader}>
+                        <Text style={styles.availabilityStore}>
+                          {entry.store.name}
+                        </Text>
+                        <Text style={styles.availabilityStock}>
+                          {entry.product.stock} {availabilityUnit}
+                        </Text>
+                      </View>
+                      <Text style={styles.availabilityPrice}>
+                        {formatCurrency(
+                          entry.product.hasOffer &&
+                            entry.product.offerPrice !== undefined
+                            ? entry.product.offerPrice
+                            : entry.product.price
+                        )}
                       </Text>
                     </View>
-                    <Text style={styles.availabilityPrice}>
-                      {formatCurrency(
-                        entry.product.hasOffer &&
-                          entry.product.offerPrice !== undefined
-                          ? entry.product.offerPrice
-                          : entry.product.price
-                      )}
-                    </Text>
-                  </View>
-                ))}
+                  );
+                })}
               </View>
             ) : null}
 
@@ -843,6 +917,10 @@ export const ProductDetailModal = ({
             <View style={styles.transferList}>
               {availability.map((entry) => {
                 const selected = entry.product.id === transferDestinationId;
+                const entryUnit = resolveProductUnitLabelForQuantity(
+                  entry.product.unit,
+                  entry.product.stock
+                ).toLowerCase();
                 return (
                   <Pressable
                     key={entry.product.id}
@@ -857,7 +935,7 @@ export const ProductDetailModal = ({
                   >
                     <Text style={styles.transferStore}>{entry.store.name}</Text>
                     <Text style={styles.transferMeta}>
-                      Stock actual: {entry.product.stock}
+                      Stock actual: {entry.product.stock} {entryUnit}
                     </Text>
                     <Text style={styles.transferMeta}>
                       Precio{" "}
@@ -1134,6 +1212,37 @@ const styles = StyleSheet.create({
   movementNote: {
     color: "rgba(255,255,255,0.6)",
     fontSize: 12,
+  },
+  changeLogList: {
+    gap: 12,
+  },
+  changeLogCard: {
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderRadius: 14,
+    padding: 12,
+    gap: 6,
+  },
+  changeLogHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  changeLogSummary: {
+    color: "#ffffff",
+    fontWeight: "600",
+    flex: 1,
+  },
+  changeLogTimestamp: {
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 12,
+  },
+  changeLogChanges: {
+    gap: 4,
+  },
+  changeLogChangeLabel: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 13,
   },
   secondaryButton: {
     backgroundColor: "rgba(86,104,255,0.18)",

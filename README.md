@@ -164,3 +164,13 @@ Si solo necesitas un instalador Android para compartir fuera de la tienda:
 - [Documentación de Expo](https://docs.expo.dev/)
 - [Guía de Expo Router](https://expo.github.io/router/docs)
 - [Zustand](https://docs.pmnd.rs/zustand/getting-started/introduction)
+
+## compilar
+
+- Instala las dependencias del proyecto:
+
+````powershell
+npm install
+``` compilar
+cd c:/Users/PC/Documents/VS/ANDROID/NINTENDO && eas build --platform android --profile preview
+````

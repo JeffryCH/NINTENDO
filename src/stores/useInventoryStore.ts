@@ -9,16 +9,28 @@ import {
   MediaAsset,
   ProductPriceSnapshot,
   ProductTemplate,
+  ProductTemplateStoreReference,
+  ProductUnit,
+  ProductChangeLogEntry,
   InventoryMovement,
   InventoryMovementReason,
   InventoryMovementKind,
 } from "@/types/inventory";
 import { generateId } from "@/utils/id";
+import {
+  DEFAULT_PRODUCT_UNIT,
+  normalizeProductUnit,
+  resolveProductUnitLabel,
+  resolveProductUnitLabelForQuantity,
+} from "@/utils/productUnits";
 
 const STORAGE_KEY = "nintendo-inventory-state";
 export const INVENTORY_STORAGE_KEY = STORAGE_KEY;
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 7;
 const MAX_PRICE_HISTORY = 120;
+const MAX_CHANGE_LOG_ENTRIES = 50;
+
+const formatCurrency = (value: number): string => `$${value.toFixed(2)}`;
 
 const createSnapshot = (
   price: number,
@@ -42,12 +54,92 @@ const normalizeMediaAsset = (asset?: MediaAsset): MediaAsset | undefined => {
   };
 };
 
+const sanitizeCodeValue = (value?: string): string | undefined => {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.toUpperCase();
+};
+
+const dedupeCodes = (values: (string | undefined)[]): string[] => {
+  const seen = new Set<string>();
+  values.forEach((item) => {
+    const normalized = sanitizeCodeValue(item);
+    if (normalized) {
+      seen.add(normalized);
+    }
+  });
+  return Array.from(seen.values());
+};
+
+const normalizeStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return dedupeCodes(value as (string | undefined)[]);
+};
+
+const normalizeTemplateStoreReferences = (
+  value: unknown
+): ProductTemplateStoreReference[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const references: ProductTemplateStoreReference[] = [];
+
+  value.forEach((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return;
+    }
+
+    const raw = entry as Partial<ProductTemplateStoreReference> & {
+      lastSeenAt?: string;
+    };
+
+    const storeId =
+      typeof raw.storeId === "string" && raw.storeId.trim()
+        ? raw.storeId.trim()
+        : undefined;
+
+    if (!storeId) {
+      return;
+    }
+
+    const upc = sanitizeCodeValue(raw.upc);
+    const box = sanitizeCodeValue(raw.box);
+    const storeName =
+      typeof raw.storeName === "string" && raw.storeName.trim()
+        ? raw.storeName.trim()
+        : undefined;
+
+    const lastSeenAt =
+      typeof raw.lastSeenAt === "string" && raw.lastSeenAt
+        ? raw.lastSeenAt
+        : new Date().toISOString();
+
+    references.push({
+      storeId,
+      storeName,
+      upc,
+      box,
+      lastSeenAt,
+    });
+  });
+
+  return references;
+};
+
 const normalizeBarcodes = (
   value?: ProductBarcodes
 ): ProductBarcodes | undefined => {
   if (!value) return undefined;
-  const box = value.box?.trim() || undefined;
-  const upc = value.upc?.trim() || undefined;
+  const box = sanitizeCodeValue(value.box);
+  const upc = sanitizeCodeValue(value.upc);
   if (!box && !upc) return undefined;
   return { box, upc };
 };
@@ -111,6 +203,60 @@ const normalizeTemplate = (raw: any): ProductTemplate | null => {
       ? raw.sourceStoreName.trim()
       : undefined;
 
+  const unit = normalizeProductUnit(
+    typeof raw.unit === "string" ? raw.unit : undefined
+  );
+
+  const normalizedBarcodes = normalizeBarcodes(raw.barcodes);
+  const masterSkuCandidate = sanitizeCodeValue(
+    typeof raw.masterSku === "string" ? raw.masterSku : undefined
+  );
+  const masterSku =
+    masterSkuCandidate ??
+    normalizedBarcodes?.box ??
+    sanitizeCodeValue(
+      typeof (raw as { catalogSku?: string }).catalogSku === "string"
+        ? (raw as { catalogSku?: string }).catalogSku
+        : undefined
+    ) ??
+    sanitizeCodeValue(normalizedBarcodes?.upc) ??
+    id;
+
+  let associatedUpcCodes = normalizeStringArray(raw.associatedUpcCodes);
+  if (normalizedBarcodes?.upc) {
+    associatedUpcCodes = dedupeCodes([
+      ...associatedUpcCodes,
+      normalizedBarcodes.upc,
+    ]);
+  }
+
+  let storeReferences = normalizeTemplateStoreReferences(raw.storeReferences);
+  if (
+    storeReferences.length === 0 &&
+    sourceStoreId &&
+    (normalizedBarcodes?.upc || normalizedBarcodes?.box)
+  ) {
+    storeReferences = [
+      {
+        storeId: sourceStoreId,
+        storeName: sourceStoreName,
+        upc: normalizedBarcodes?.upc,
+        box: normalizedBarcodes?.box ?? masterSku ?? undefined,
+        lastSeenAt: new Date().toISOString(),
+      },
+    ];
+  }
+
+  const resolvedBarcodes = normalizedBarcodes
+    ? {
+        ...normalizedBarcodes,
+        box: normalizeBarcodes({ box: masterSku, upc: normalizedBarcodes.upc })
+          ?.box,
+      }
+    : masterSku
+    ? { box: masterSku }
+    : undefined;
+
   const createdAt =
     typeof raw.createdAt === "string" && raw.createdAt
       ? raw.createdAt
@@ -127,8 +273,11 @@ const normalizeTemplate = (raw: any): ProductTemplate | null => {
   return {
     id,
     name,
+    unit,
     categoryName,
     basePrice: basePriceCandidate,
+    masterSku: masterSku ?? id,
+    associatedUpcCodes,
     imageUrl:
       typeof raw.imageUrl === "string" && raw.imageUrl.trim()
         ? raw.imageUrl.trim()
@@ -138,9 +287,13 @@ const normalizeTemplate = (raw: any): ProductTemplate | null => {
       typeof raw.description === "string" && raw.description.trim()
         ? raw.description.trim()
         : undefined,
-    barcodes: normalizeBarcodes(raw.barcodes),
+    barcodes: resolvedBarcodes,
     sourceStoreId,
     sourceStoreName,
+    storeReferences: storeReferences.map((reference) => ({
+      ...reference,
+      box: reference.box ?? masterSku ?? undefined,
+    })),
     createdAt,
     updatedAt,
     lastUsedAt,
@@ -153,17 +306,39 @@ const createTemplateFromProduct = (
   store?: Store | null
 ): ProductTemplate => {
   const now = new Date().toISOString();
+  const masterSku =
+    sanitizeCodeValue(product.barcodes?.box) ??
+    sanitizeCodeValue(product.barcodes?.upc) ??
+    product.id;
+  const associatedUpcCodes = product.barcodes?.upc
+    ? [sanitizeCodeValue(product.barcodes.upc)!]
+    : [];
+  const storeReferences: ProductTemplateStoreReference[] = store
+    ? [
+        {
+          storeId: store.id,
+          storeName: store.name,
+          upc: sanitizeCodeValue(product.barcodes?.upc),
+          box: masterSku,
+          lastSeenAt: now,
+        },
+      ]
+    : [];
   return {
     id: generateId("template"),
     name: product.name,
+    unit: product.unit,
     categoryName: category?.name,
     basePrice: product.price,
+    masterSku,
+    associatedUpcCodes,
     imageUrl: product.imageUrl,
     imageAsset: product.imageAsset,
     description: product.description,
-    barcodes: product.barcodes,
+    barcodes: normalizeBarcodes({ box: masterSku, upc: product.barcodes?.upc }),
     sourceStoreId: store?.id,
     sourceStoreName: store?.name,
+    storeReferences,
     createdAt: now,
     updatedAt: now,
   };
@@ -237,14 +412,47 @@ const createInitialMovementRecord = (
   });
 };
 
+const createProductCreationChangeLogEntry = (
+  product: Product
+): ProductChangeLogEntry => {
+  const unitLabel = resolveProductUnitLabelForQuantity(
+    product.unit,
+    product.stock
+  ).toLowerCase();
+  const changes: string[] = [
+    `Precio base: ${formatCurrency(product.price)}`,
+    `Stock inicial: ${product.stock} ${unitLabel}`,
+  ];
+
+  if (product.hasOffer && product.offerPrice !== undefined) {
+    changes.push(`Oferta inicial: ${formatCurrency(product.offerPrice)}`);
+  }
+
+  return {
+    id: generateId("chg"),
+    productId: product.id,
+    performedAt: new Date().toISOString(),
+    summary: "Producto registrado en inventario",
+    changes,
+  };
+};
+
 const toTemplateKey = (input: {
   name: string;
   barcodes?: ProductBarcodes;
+  masterSku?: string;
 }): string => {
-  const nameKey = input.name.trim().toLowerCase();
-  const upc = input.barcodes?.upc?.trim().toLowerCase() ?? "";
-  const box = input.barcodes?.box?.trim().toLowerCase() ?? "";
-  return [nameKey, upc, box].filter((segment) => segment.length > 0).join("|");
+  const master = sanitizeCodeValue(
+    input.masterSku ?? input.barcodes?.box ?? undefined
+  );
+  if (master) {
+    return master;
+  }
+  const upc = sanitizeCodeValue(input.barcodes?.upc);
+  if (upc) {
+    return `${input.name.trim().toLowerCase()}|${upc}`;
+  }
+  return input.name.trim().toLowerCase();
 };
 
 const appendSnapshot = (
@@ -305,6 +513,55 @@ const normalizeCategory = (raw: any): Category | null => {
         : undefined,
   };
 };
+
+const normalizeChangeLogEntry = (
+  raw: any,
+  productId: string
+): ProductChangeLogEntry | null => {
+  if (!raw || typeof raw !== "object") return null;
+
+  const summary =
+    typeof raw.summary === "string" && raw.summary.trim()
+      ? raw.summary.trim()
+      : "";
+
+  if (!summary) {
+    return null;
+  }
+
+  const changes = Array.isArray(raw.changes)
+    ? raw.changes
+        .map((change: any) =>
+          typeof change === "string" && change.trim() ? change.trim() : null
+        )
+        .filter((item: string | null): item is string => Boolean(item))
+    : [];
+
+  const performedAt =
+    typeof raw.performedAt === "string" && raw.performedAt
+      ? raw.performedAt
+      : new Date().toISOString();
+
+  const id =
+    typeof raw.id === "string" && raw.id.trim()
+      ? raw.id.trim()
+      : generateId("chg");
+
+  return {
+    id,
+    productId,
+    performedAt,
+    summary,
+    changes,
+  };
+};
+
+const trimChangeLogEntries = (
+  entries: ProductChangeLogEntry[]
+): ProductChangeLogEntry[] =>
+  entries.length > MAX_CHANGE_LOG_ENTRIES
+    ? entries.slice(entries.length - MAX_CHANGE_LOG_ENTRIES)
+    : entries;
 
 const normalizeProductRecord = (raw: any): Product | null => {
   if (!raw || typeof raw !== "object") return null;
@@ -384,11 +641,33 @@ const normalizeProductRecord = (raw: any): Product | null => {
     ? history[history.length - 2].price
     : undefined;
 
+  const unit = normalizeProductUnit(
+    typeof raw.unit === "string" ? raw.unit : undefined
+  );
+
+  const changeLogEntries = Array.isArray(raw.changeLog)
+    ? raw.changeLog
+        .map((entry: any) => normalizeChangeLogEntry(entry, id))
+        .filter(
+          (
+            entry: ProductChangeLogEntry | null
+          ): entry is ProductChangeLogEntry => entry !== null
+        )
+    : [];
+
+  const changeLog = trimChangeLogEntries(changeLogEntries);
+  const templateId =
+    typeof raw.templateId === "string" && raw.templateId.trim()
+      ? raw.templateId.trim()
+      : undefined;
+
   return {
     id,
     storeId,
     categoryId,
     name,
+    unit,
+    templateId,
     price,
     previousPrice,
     priceUpdatedAt,
@@ -407,6 +686,7 @@ const normalizeProductRecord = (raw: any): Product | null => {
     offerPrice: hasOffer ? offerPrice : undefined,
     discountInfo: normalizeDiscountInfo(raw.discountInfo),
     barcodes: normalizeBarcodes(raw.barcodes),
+    changeLog,
   };
 };
 
@@ -611,12 +891,14 @@ const INITIAL_CATEGORIES: Category[] = [
   { id: "cat-accessories", storeId: "store-gdl", name: "Accesorios" },
 ];
 
-const INITIAL_PRODUCTS: Product[] = [
+const INITIAL_PRODUCTS_BASE: Product[] = [
   {
     id: "prod-switch-oled",
     storeId: "store-cdmx",
     categoryId: "cat-consoles",
     name: "Nintendo Switch OLED (Neón)",
+    unit: DEFAULT_PRODUCT_UNIT,
+    templateId: undefined,
     price: 8999,
     previousPrice: undefined,
     priceUpdatedAt: new Date().toISOString(),
@@ -627,12 +909,19 @@ const INITIAL_PRODUCTS: Product[] = [
     description: "Edición OLED con mejoras en pantalla y kickstand.",
     hasOffer: true,
     offerPrice: 8299,
+    barcodes: {
+      upc: "0045496882490",
+      box: "SKU-SWITCH-OLED",
+    },
+    changeLog: [],
   },
   {
     id: "prod-totk",
     storeId: "store-cdmx",
     categoryId: "cat-games",
     name: "The Legend of Zelda: Tears of the Kingdom",
+    unit: DEFAULT_PRODUCT_UNIT,
+    templateId: undefined,
     price: 1899,
     previousPrice: undefined,
     priceUpdatedAt: new Date().toISOString(),
@@ -642,12 +931,19 @@ const INITIAL_PRODUCTS: Product[] = [
       "https://images.unsplash.com/photo-1538485399081-7191377e8241?auto=format&fit=crop&w=900&q=80",
     description: "Aventura épica exclusiva de Nintendo Switch.",
     hasOffer: false,
+    barcodes: {
+      upc: "0045496429643",
+      box: "SKU-TOTK-STD",
+    },
+    changeLog: [],
   },
   {
     id: "prod-amiibo-link",
     storeId: "store-cdmx",
     categoryId: "cat-merch",
     name: "Amiibo Link (Skyward Sword)",
+    unit: DEFAULT_PRODUCT_UNIT,
+    templateId: undefined,
     price: 699,
     previousPrice: undefined,
     priceUpdatedAt: new Date().toISOString(),
@@ -657,12 +953,19 @@ const INITIAL_PRODUCTS: Product[] = [
       "https://assets.nintendo.com/image/upload/ar_16:9,b_auto:border,c_lpad/b_white/f_auto/q_auto/dpr_1.5/c_scale,w_600/amiibo/The%20Legend%20of%20Zelda/link-skyward-sword-amiibo-the-legend-of-zelda-series-box",
     hasOffer: true,
     offerPrice: 599,
+    barcodes: {
+      upc: "0045496426433",
+      box: "SKU-AMIIBO-LINK",
+    },
+    changeLog: [],
   },
   {
     id: "prod-switch-lite",
     storeId: "store-gdl",
     categoryId: "cat-collectibles",
     name: "Nintendo Switch Lite Zacian & Zamazenta",
+    unit: DEFAULT_PRODUCT_UNIT,
+    templateId: undefined,
     price: 6499,
     previousPrice: undefined,
     priceUpdatedAt: new Date().toISOString(),
@@ -672,12 +975,19 @@ const INITIAL_PRODUCTS: Product[] = [
       "https://saimaya.es/wp-content/uploads/2021/01/products-12088.jpg",
     description: "Edición limitada inspirada en Pokémon Sword & Shield.",
     hasOffer: false,
+    barcodes: {
+      upc: "0045496882872",
+      box: "SKU-SWITCH-LITE-ZAC",
+    },
+    changeLog: [],
   },
   {
     id: "prod-pro-controller",
     storeId: "store-gdl",
     categoryId: "cat-accessories",
     name: "Nintendo Switch Pro Controller Splatoon 3",
+    unit: DEFAULT_PRODUCT_UNIT,
+    templateId: undefined,
     price: 2499,
     previousPrice: undefined,
     priceUpdatedAt: new Date().toISOString(),
@@ -687,10 +997,15 @@ const INITIAL_PRODUCTS: Product[] = [
       "https://assets.nintendo.com/image/upload/ar_16:9,c_lpad,w_656/b_white/f_auto/q_auto/ncom/My%20Nintendo%20Store/EN-US/Nintendo%20Switch%202/Controllers/Pro%20Controllers/123674-nintendo-switch-2-pro-controller-package-front-2000x2000",
     hasOffer: true,
     offerPrice: 2299,
+    barcodes: {
+      upc: "0045496881462",
+      box: "SKU-PROCTRL-SPLAT3",
+    },
+    changeLog: [],
   },
 ];
 
-const INITIAL_PRODUCT_TEMPLATES: ProductTemplate[] = INITIAL_PRODUCTS.map(
+const INITIAL_PRODUCT_TEMPLATES: ProductTemplate[] = INITIAL_PRODUCTS_BASE.map(
   (product) =>
     createTemplateFromProduct(
       product,
@@ -698,6 +1013,18 @@ const INITIAL_PRODUCT_TEMPLATES: ProductTemplate[] = INITIAL_PRODUCTS.map(
       INITIAL_STORES.find((store) => store.id === product.storeId)
     )
 );
+
+INITIAL_PRODUCT_TEMPLATES.forEach((template) => {
+  const product = INITIAL_PRODUCTS_BASE.find((item) => {
+    const masterSku = sanitizeCodeValue(item.barcodes?.box) ?? item.id;
+    return masterSku === sanitizeCodeValue(template.masterSku);
+  });
+  if (product) {
+    product.templateId = template.id;
+  }
+});
+
+const INITIAL_PRODUCTS: Product[] = INITIAL_PRODUCTS_BASE;
 
 const INITIAL_INVENTORY_MOVEMENTS: InventoryMovement[] = INITIAL_PRODUCTS.map(
   (product) => createInitialMovementRecord(product)
@@ -732,6 +1059,7 @@ interface AddProductPayload {
   name: string;
   price: number;
   stock: number;
+  unit?: ProductUnit;
   imageUrl?: string;
   imageAsset?: MediaAsset;
   description?: string;
@@ -753,6 +1081,7 @@ interface UpdateProductPayload {
       | "imageUrl"
       | "imageAsset"
       | "description"
+      | "unit"
       | "hasOffer"
       | "offerPrice"
       | "categoryId"
@@ -902,52 +1231,149 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       store?: Store | null;
       templateIdUsed?: string;
     } = {}
-  ): Promise<void> => {
-    if (options.templateIdUsed) {
-      return;
-    }
-
+  ): Promise<ProductTemplate | undefined> => {
     const templates = get().productTemplates;
-    const key = toTemplateKey({
-      name: product.name,
-      barcodes: product.barcodes,
-    });
-
     const now = new Date().toISOString();
-    const existingIndex = templates.findIndex(
-      (template) => toTemplateKey(template) === key
-    );
+    const category = options.category ?? null;
+    const store = options.store ?? null;
 
-    if (existingIndex !== -1) {
-      const current = templates[existingIndex];
-      const nextTemplate: ProductTemplate = {
+    const masterSku =
+      sanitizeCodeValue(product.barcodes?.box) ??
+      sanitizeCodeValue(product.barcodes?.upc) ??
+      (product.templateId
+        ? sanitizeCodeValue(product.templateId)
+        : undefined) ??
+      product.id;
+    const upcCode = sanitizeCodeValue(product.barcodes?.upc);
+
+    const mergeTemplate = (current: ProductTemplate): ProductTemplate => {
+      const master = sanitizeCodeValue(current.masterSku) ?? masterSku;
+      const barcodes =
+        normalizeBarcodes({
+          box: master,
+          upc: upcCode ?? current.barcodes?.upc,
+        }) ?? current.barcodes;
+
+      const associatedUpcCodes = dedupeCodes([
+        ...current.associatedUpcCodes,
+        upcCode,
+      ]);
+
+      const storeReferences = (() => {
+        if (!store) {
+          return current.storeReferences;
+        }
+        const index = current.storeReferences.findIndex(
+          (reference) => reference.storeId === store.id
+        );
+        const reference: ProductTemplateStoreReference = {
+          storeId: store.id,
+          storeName: store.name,
+          upc: upcCode ?? current.storeReferences[index]?.upc,
+          box: master,
+          lastSeenAt: now,
+        };
+        if (index === -1) {
+          return [...current.storeReferences, reference];
+        }
+        const next = [...current.storeReferences];
+        next[index] = reference;
+        return next;
+      })();
+
+      return {
         ...current,
+        masterSku: master,
         basePrice: product.price,
-        categoryName: options.category?.name ?? current.categoryName,
+        unit: product.unit,
+        categoryName: category?.name ?? current.categoryName,
         imageUrl: product.imageUrl ?? current.imageUrl,
         imageAsset: product.imageAsset ?? current.imageAsset,
         description: product.description ?? current.description,
-        barcodes: product.barcodes ?? current.barcodes,
-        sourceStoreId: options.store?.id ?? current.sourceStoreId,
-        sourceStoreName: options.store?.name ?? current.sourceStoreName,
+        barcodes,
+        associatedUpcCodes,
+        sourceStoreId: store?.id ?? current.sourceStoreId,
+        sourceStoreName: store?.name ?? current.sourceStoreName,
+        storeReferences,
         updatedAt: now,
       };
+    };
 
-      const nextTemplates = [...templates];
-      nextTemplates[existingIndex] = nextTemplate;
-      set({ productTemplates: nextTemplates });
-      await persistState({ productTemplates: nextTemplates });
-      return;
+    const persistTemplates = async (list: ProductTemplate[]): Promise<void> => {
+      set({ productTemplates: list });
+      await persistState({ productTemplates: list });
+    };
+
+    if (options.templateIdUsed) {
+      const indexById = templates.findIndex(
+        (template) => template.id === options.templateIdUsed
+      );
+      if (indexById !== -1) {
+        const nextTemplate = mergeTemplate(templates[indexById]);
+        const nextTemplates = [...templates];
+        nextTemplates[indexById] = nextTemplate;
+        await persistTemplates(nextTemplates);
+        return nextTemplate;
+      }
     }
 
-    const template = createTemplateFromProduct(
-      product,
-      options.category,
-      options.store
-    );
-    const nextTemplates = [...templates, template];
-    set({ productTemplates: nextTemplates });
-    await persistState({ productTemplates: nextTemplates });
+    const key = toTemplateKey({
+      name: product.name,
+      barcodes: product.barcodes,
+      masterSku,
+    });
+
+    const existingIndex = templates.findIndex((template) => {
+      const templateKey = toTemplateKey({
+        name: template.name,
+        barcodes: template.barcodes,
+        masterSku: template.masterSku,
+      });
+      if (templateKey === key) {
+        return true;
+      }
+      const templateMaster = sanitizeCodeValue(template.masterSku);
+      return templateMaster === masterSku;
+    });
+
+    if (existingIndex !== -1) {
+      const nextTemplate = mergeTemplate(templates[existingIndex]);
+      const nextTemplates = [...templates];
+      nextTemplates[existingIndex] = nextTemplate;
+      await persistTemplates(nextTemplates);
+      return nextTemplate;
+    }
+
+    const template = createTemplateFromProduct(product, category, store);
+    const normalizedTemplate: ProductTemplate = {
+      ...template,
+      masterSku: sanitizeCodeValue(template.masterSku) ?? masterSku,
+      associatedUpcCodes: dedupeCodes([
+        ...template.associatedUpcCodes,
+        upcCode,
+      ]),
+      barcodes:
+        normalizeBarcodes({
+          box: template.masterSku,
+          upc: upcCode ?? template.barcodes?.upc,
+        }) ?? template.barcodes,
+      storeReferences:
+        store && template.storeReferences.length === 0
+          ? [
+              {
+                storeId: store.id,
+                storeName: store.name,
+                upc: upcCode,
+                box: template.masterSku,
+                lastSeenAt: now,
+              },
+            ]
+          : template.storeReferences,
+    };
+
+    const nextTemplates = [...templates, normalizedTemplate];
+    await persistTemplates(nextTemplates);
+    return normalizedTemplate;
   };
 
   return {
@@ -1164,6 +1590,7 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       name,
       price,
       stock,
+      unit,
       imageUrl,
       imageAsset,
       description,
@@ -1193,6 +1620,14 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       const normalizedBarcodes = normalizeBarcodes(barcodes);
       const normalizedDiscount = normalizeDiscountInfo(discountInfo);
       const normalizedHasOffer = Boolean(hasOffer && offerPrice !== undefined);
+      if (!templateIdUsed && (!normalizedBarcodes || !normalizedBarcodes.box)) {
+        throw new Error(
+          "Debes ingresar el Código Único de Caja (SKU Maestro) para registrar este producto en el Catálogo Maestro."
+        );
+      }
+
+      const normalizedUnit = normalizeProductUnit(unit);
+      const trimmedDescription = description?.trim() || undefined;
       const priceHistory = createSnapshot(
         price,
         normalizedHasOffer && offerPrice !== undefined ? offerPrice : undefined
@@ -1201,11 +1636,13 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
         priceHistory[priceHistory.length - 1]?.recordedAt ??
         new Date().toISOString();
 
-      const newProduct: Product = {
+      const baseProduct: Product = {
         id: generateId("product"),
         storeId,
         categoryId,
         name: name.trim(),
+        unit: normalizedUnit,
+        templateId: templateIdUsed,
         price,
         previousPrice: undefined,
         priceUpdatedAt,
@@ -1213,7 +1650,7 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
         stock,
         imageUrl: trimmedImageUrl,
         imageAsset: normalizedImageAsset,
-        description,
+        description: trimmedDescription,
         hasOffer: normalizedHasOffer,
         offerPrice:
           normalizedHasOffer && offerPrice !== undefined
@@ -1221,11 +1658,36 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
             : undefined,
         discountInfo: normalizedDiscount,
         barcodes: normalizedBarcodes,
+        changeLog: [],
       };
 
+      const creationLogEntry = createProductCreationChangeLogEntry(baseProduct);
+      const newProduct: Product = {
+        ...baseProduct,
+        changeLog: trimChangeLogEntries([
+          creationLogEntry,
+          ...baseProduct.changeLog,
+        ]),
+      };
+
+      const template = await registerTemplateFromProduct(newProduct, {
+        category,
+        store,
+        templateIdUsed,
+      });
+
+      const resolvedTemplateId = template?.id ?? templateIdUsed;
+      const productToPersist =
+        resolvedTemplateId && resolvedTemplateId !== newProduct.templateId
+          ? { ...newProduct, templateId: resolvedTemplateId }
+          : newProduct;
+
       const currentMovements = get().inventoryMovements;
-      const products = [...get().products, newProduct];
-      const initialMovement = createInitialMovementRecord(newProduct, false);
+      const products = [...get().products, productToPersist];
+      const initialMovement = createInitialMovementRecord(
+        productToPersist,
+        false
+      );
       const nextMovements =
         initialMovement !== null
           ? [...currentMovements, initialMovement]
@@ -1238,12 +1700,7 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
         set({ products });
         await persistState({ products });
       }
-      await registerTemplateFromProduct(newProduct, {
-        category,
-        store,
-        templateIdUsed,
-      });
-      return newProduct;
+      return productToPersist;
     },
     updateProduct: async ({
       productId,
@@ -1255,6 +1712,9 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
 
       const current = products[index];
       const categories = get().categories;
+      const stores = get().stores;
+      const store =
+        stores.find((candidate) => candidate.id === current.storeId) ?? null;
 
       if (data.categoryId) {
         const category = categories.find(
@@ -1271,6 +1731,8 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
         Object.prototype.hasOwnProperty.call(data, key);
 
       const nextCategoryId = data.categoryId ?? current.categoryId;
+      const nextCategory =
+        categories.find((candidate) => candidate.id === nextCategoryId) ?? null;
       const nextName =
         data.name !== undefined ? data.name.trim() : current.name;
       const nextDescription =
@@ -1341,7 +1803,166 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
         }
       }
 
+      const nextUnit = hasOwn("unit")
+        ? normalizeProductUnit(data.unit)
+        : current.unit;
       const nextStock = data.stock !== undefined ? data.stock : current.stock;
+
+      const stockChanged = nextStock !== current.stock;
+      const unitChanged = nextUnit !== current.unit;
+      const categoryChanged = nextCategoryId !== current.categoryId;
+      const nameChanged = nextName !== current.name;
+      const descriptionChanged = nextDescription !== current.description;
+      const imageChanged =
+        nextImageUrl !== current.imageUrl ||
+        (nextImageAsset?.uri ?? null) !== (current.imageAsset?.uri ?? null);
+      const barcodesChanged =
+        JSON.stringify(nextBarcodes ?? null) !==
+        JSON.stringify(current.barcodes ?? null);
+      const discountChanged =
+        JSON.stringify(nextDiscountInfo ?? null) !==
+        JSON.stringify(current.discountInfo ?? null);
+
+      const changes: string[] = [];
+
+      if (nameChanged) {
+        changes.push(`Nombre: "${current.name}" -> "${nextName}"`);
+      }
+
+      if (unitChanged) {
+        changes.push(
+          `Unidad: ${resolveProductUnitLabel(
+            current.unit
+          )} -> ${resolveProductUnitLabel(nextUnit)}`
+        );
+      }
+
+      if (priceChanged) {
+        changes.push(
+          `Precio: ${formatCurrency(current.price)} -> ${formatCurrency(
+            nextPrice
+          )}`
+        );
+      }
+
+      const formatOffer = (active: boolean, value?: number): string =>
+        active && value !== undefined ? formatCurrency(value) : "sin oferta";
+
+      if (offerChanged) {
+        const previousOffer = formatOffer(current.hasOffer, current.offerPrice);
+        const nextOffer = formatOffer(
+          nextHasOffer,
+          nextOfferPrice ?? undefined
+        );
+
+        if (!current.hasOffer && nextHasOffer) {
+          changes.push(`Oferta activada: ${nextOffer}`);
+        } else if (current.hasOffer && !nextHasOffer) {
+          changes.push(`Oferta desactivada (antes: ${previousOffer})`);
+        } else {
+          changes.push(`Oferta: ${previousOffer} -> ${nextOffer}`);
+        }
+      }
+
+      if (stockChanged) {
+        changes.push(`Stock: ${current.stock} -> ${nextStock}`);
+      }
+
+      if (categoryChanged) {
+        const currentCategory = categories.find(
+          (candidate) => candidate.id === current.categoryId
+        );
+        changes.push(
+          `Categoría: ${currentCategory?.name ?? "Sin categoría"} -> ${
+            nextCategory?.name ?? "Sin categoría"
+          }`
+        );
+      }
+
+      if (descriptionChanged) {
+        if (!current.description && nextDescription) {
+          changes.push("Descripción agregada.");
+        } else if (current.description && !nextDescription) {
+          changes.push("Descripción eliminada.");
+        } else {
+          changes.push("Descripción actualizada.");
+        }
+      }
+
+      if (imageChanged) {
+        if (
+          !current.imageUrl &&
+          !current.imageAsset &&
+          (nextImageUrl || nextImageAsset)
+        ) {
+          changes.push("Imagen agregada.");
+        } else if (current.imageUrl || current.imageAsset) {
+          changes.push(
+            nextImageUrl || nextImageAsset
+              ? "Imagen actualizada."
+              : "Imagen eliminada."
+          );
+        }
+      }
+
+      if (barcodesChanged) {
+        changes.push("Códigos de barra actualizados.");
+      }
+
+      if (discountChanged) {
+        changes.push("Condiciones de descuento actualizadas.");
+      }
+
+      let summary: string | undefined;
+      if (priceChanged && stockChanged) {
+        summary = "Precio y stock actualizados";
+      } else if (priceChanged) {
+        summary = "Precio actualizado";
+      } else if (stockChanged) {
+        summary = "Stock ajustado";
+      } else if (offerChanged) {
+        summary = nextHasOffer ? "Oferta activada" : "Oferta desactivada";
+      } else if (unitChanged) {
+        summary = "Unidad actualizada";
+      } else if (categoryChanged) {
+        summary = "Categoría actualizada";
+      } else if (nameChanged) {
+        summary = "Nombre actualizado";
+      } else if (descriptionChanged) {
+        summary = "Descripción actualizada";
+      } else if (imageChanged) {
+        summary = "Imagen actualizada";
+      } else if (barcodesChanged) {
+        summary = "Códigos de barra actualizados";
+      } else if (discountChanged) {
+        summary = "Condiciones de descuento actualizadas";
+      }
+
+      if (!summary && changes.length > 1) {
+        summary = "Actualización general del producto";
+      }
+
+      if (!summary && changes.length === 1) {
+        summary = changes[0];
+      }
+
+      if (!summary && changes.length > 0) {
+        summary = "Producto actualizado";
+      }
+
+      const nextChangeLog =
+        changes.length > 0
+          ? trimChangeLogEntries([
+              ...current.changeLog,
+              {
+                id: generateId("chg"),
+                productId: current.id,
+                performedAt: new Date().toISOString(),
+                summary: summary ?? "Producto actualizado",
+                changes,
+              },
+            ])
+          : current.changeLog;
 
       const next: Product = {
         ...current,
@@ -1359,12 +1980,30 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
         stock: nextStock,
         hasOffer: nextHasOffer,
         offerPrice: nextOfferPrice,
+        unit: nextUnit,
+        changeLog: nextChangeLog,
       };
 
       const nextProducts = [...products];
       nextProducts[index] = next;
       set({ products: nextProducts });
       await persistState({ products: nextProducts });
+
+      const template = await registerTemplateFromProduct(next, {
+        category: nextCategory,
+        store,
+        templateIdUsed: next.templateId,
+      });
+
+      if (!next.templateId && template?.id) {
+        const updatedProduct: Product = { ...next, templateId: template.id };
+        const refreshedProducts = [...nextProducts];
+        refreshedProducts[index] = updatedProduct;
+        set({ products: refreshedProducts });
+        await persistState({ products: refreshedProducts });
+        return updatedProduct;
+      }
+
       return next;
     },
     adjustProductStock: async (
