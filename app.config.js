@@ -120,7 +120,7 @@ module.exports = ({ config }) => {
     name: "Nintendo Inventory",
     slug: "nintendo-inventory",
     scheme: "nintendo",
-    version: "1.0.3",
+    version: "2.0.2",
     orientation: "portrait",
     userInterfaceStyle: "dark",
     plugins: ["expo-router", "expo-camera"],
@@ -132,7 +132,7 @@ module.exports = ({ config }) => {
     icon: iconPath,
     android: {
       package: "com.nintendo.inventory",
-      versionCode: 3,
+      versionCode: 4,
       adaptiveIcon: {
         foregroundImage: ICON_RELATIVE_PATH,
         backgroundColor: "#080b16",
