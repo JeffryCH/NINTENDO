@@ -40,6 +40,7 @@ export const FloatingProductSearch = () => {
   const insets = useSafeAreaInsets();
   const stores = useInventoryStore((state) => state.stores);
   const products = useInventoryStore((state) => state.products);
+  const productTemplates = useInventoryStore((state) => state.productTemplates);
 
   const [searchVisible, setSearchVisible] = useState(false);
   const [query, setQuery] = useState("");
@@ -54,7 +55,9 @@ export const FloatingProductSearch = () => {
     }
 
     const matches: SearchResult[] = [];
-    const filtered = filterProductsByQuery(products, trimmed);
+    const filtered = filterProductsByQuery(products, trimmed, {
+      templates: productTemplates,
+    });
     for (const product of filtered) {
       const store = stores.find((item) => item.id === product.storeId);
       if (!store) {
@@ -98,7 +101,9 @@ export const FloatingProductSearch = () => {
 
   const handleScanDetected = useCallback(
     (value: string) => {
-      const matches = findStoreMatchesByBarcode(products, stores, value);
+      const matches = findStoreMatchesByBarcode(products, stores, value, {
+        templates: productTemplates,
+      });
       if (matches.length === 0) {
         Alert.alert(
           "Sin coincidencias",
@@ -120,7 +125,7 @@ export const FloatingProductSearch = () => {
         matches,
       });
     },
-    [navigateToProduct, products, stores]
+    [navigateToProduct, products, stores, productTemplates]
   );
 
   const renderSuggestion = ({ item }: { item: SearchResult }) => {

@@ -76,6 +76,72 @@ const dedupeCodes = (values: (string | undefined)[]): string[] => {
   return Array.from(seen.values());
 };
 
+const collectTemplateCodeSet = (template: ProductTemplate): Set<string> => {
+  const codes = new Set<string>();
+  const register = (value?: string) => {
+    const normalized = sanitizeCodeValue(value);
+    if (normalized) {
+      codes.add(normalized);
+    }
+  };
+
+  register(template.masterSku);
+  register(template.barcodes?.box);
+  register(template.barcodes?.upc);
+  template.associatedUpcCodes.forEach(register);
+  template.storeReferences.forEach((reference) => {
+    register(reference.box);
+    register(reference.upc);
+  });
+
+  return codes;
+};
+
+const resolveTemplateConflictLabel = (
+  template: ProductTemplate,
+  products: Product[]
+): string => {
+  const masterSku = sanitizeCodeValue(template.masterSku);
+  if (masterSku) {
+    return masterSku;
+  }
+
+  const product = products.find((item) => item.templateId === template.id);
+  if (product?.name) {
+    return product.name;
+  }
+
+  return template.name;
+};
+
+const assertTemplateCodeAvailability = (
+  code: string | undefined,
+  templates: ProductTemplate[],
+  products: Product[],
+  allowedTemplateIds: Set<string>
+): void => {
+  const normalized = sanitizeCodeValue(code);
+  if (!normalized) {
+    return;
+  }
+
+  const conflict = templates.find((template) => {
+    if (allowedTemplateIds.has(template.id)) {
+      return false;
+    }
+    return collectTemplateCodeSet(template).has(normalized);
+  });
+
+  if (!conflict) {
+    return;
+  }
+
+  const label = resolveTemplateConflictLabel(conflict, products);
+  throw new Error(
+    `El código ${normalized} ya está asignado al producto ${label}. Resuelve la duplicidad antes de continuar.`
+  );
+};
+
 const normalizeStringArray = (value: unknown): string[] => {
   if (!Array.isArray(value)) {
     return [];
@@ -898,7 +964,6 @@ const INITIAL_PRODUCTS_BASE: Product[] = [
     categoryId: "cat-consoles",
     name: "Nintendo Switch OLED (Neón)",
     unit: DEFAULT_PRODUCT_UNIT,
-    templateId: undefined,
     price: 8999,
     previousPrice: undefined,
     priceUpdatedAt: new Date().toISOString(),
@@ -921,7 +986,6 @@ const INITIAL_PRODUCTS_BASE: Product[] = [
     categoryId: "cat-games",
     name: "The Legend of Zelda: Tears of the Kingdom",
     unit: DEFAULT_PRODUCT_UNIT,
-    templateId: undefined,
     price: 1899,
     previousPrice: undefined,
     priceUpdatedAt: new Date().toISOString(),
@@ -943,7 +1007,6 @@ const INITIAL_PRODUCTS_BASE: Product[] = [
     categoryId: "cat-merch",
     name: "Amiibo Link (Skyward Sword)",
     unit: DEFAULT_PRODUCT_UNIT,
-    templateId: undefined,
     price: 699,
     previousPrice: undefined,
     priceUpdatedAt: new Date().toISOString(),
@@ -965,7 +1028,6 @@ const INITIAL_PRODUCTS_BASE: Product[] = [
     categoryId: "cat-collectibles",
     name: "Nintendo Switch Lite Zacian & Zamazenta",
     unit: DEFAULT_PRODUCT_UNIT,
-    templateId: undefined,
     price: 6499,
     previousPrice: undefined,
     priceUpdatedAt: new Date().toISOString(),
@@ -987,7 +1049,6 @@ const INITIAL_PRODUCTS_BASE: Product[] = [
     categoryId: "cat-accessories",
     name: "Nintendo Switch Pro Controller Splatoon 3",
     unit: DEFAULT_PRODUCT_UNIT,
-    templateId: undefined,
     price: 2499,
     previousPrice: undefined,
     priceUpdatedAt: new Date().toISOString(),
@@ -1006,23 +1067,16 @@ const INITIAL_PRODUCTS_BASE: Product[] = [
 ];
 
 const INITIAL_PRODUCT_TEMPLATES: ProductTemplate[] = INITIAL_PRODUCTS_BASE.map(
-  (product) =>
-    createTemplateFromProduct(
+  (product) => {
+    const template = createTemplateFromProduct(
       product,
       INITIAL_CATEGORIES.find((category) => category.id === product.categoryId),
       INITIAL_STORES.find((store) => store.id === product.storeId)
-    )
-);
-
-INITIAL_PRODUCT_TEMPLATES.forEach((template) => {
-  const product = INITIAL_PRODUCTS_BASE.find((item) => {
-    const masterSku = sanitizeCodeValue(item.barcodes?.box) ?? item.id;
-    return masterSku === sanitizeCodeValue(template.masterSku);
-  });
-  if (product) {
+    );
     product.templateId = template.id;
+    return template;
   }
-});
+);
 
 const INITIAL_PRODUCTS: Product[] = INITIAL_PRODUCTS_BASE;
 
@@ -1233,6 +1287,7 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
     } = {}
   ): Promise<ProductTemplate | undefined> => {
     const templates = get().productTemplates;
+    const productsState = get().products;
     const now = new Date().toISOString();
     const category = options.category ?? null;
     const store = options.store ?? null;
@@ -1335,6 +1390,30 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       const templateMaster = sanitizeCodeValue(template.masterSku);
       return templateMaster === masterSku;
     });
+
+    const allowedTemplateIds = new Set<string>();
+    if (options.templateIdUsed) {
+      allowedTemplateIds.add(options.templateIdUsed);
+    }
+    if (product.templateId) {
+      allowedTemplateIds.add(product.templateId);
+    }
+    if (existingIndex !== -1) {
+      allowedTemplateIds.add(templates[existingIndex].id);
+    }
+
+    assertTemplateCodeAvailability(
+      masterSku,
+      templates,
+      productsState,
+      allowedTemplateIds
+    );
+    assertTemplateCodeAvailability(
+      upcCode,
+      templates,
+      productsState,
+      allowedTemplateIds
+    );
 
     if (existingIndex !== -1) {
       const nextTemplate = mergeTemplate(templates[existingIndex]);
