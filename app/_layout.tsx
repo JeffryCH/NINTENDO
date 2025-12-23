@@ -1,10 +1,14 @@
+import "../global.css";
 import { Stack } from "expo-router";
 import { useEffect } from "react";
 import { StatusBar } from "expo-status-bar";
 import { ActivityIndicator, View, StyleSheet, Text } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { HeroUINativeProvider } from "heroui-native";
 import { useInventoryStore } from "@/stores/useInventoryStore";
 import { FloatingProductSearch } from "@/components/FloatingProductSearch";
+import { FloatingQuickActions } from "@/components/FloatingQuickActions";
 
 export default function RootLayout() {
   const loadInventory = useInventoryStore((state) => state.load);
@@ -26,24 +30,30 @@ export default function RootLayout() {
   }
 
   return (
-    <SafeAreaProvider>
-      <StatusBar style="light" />
-      <Stack
-        screenOptions={{
-          headerStyle: {
-            backgroundColor: "#0f1320",
-          },
-          headerTintColor: "#ffffff",
-          contentStyle: {
-            backgroundColor: "#080b16",
-          },
-          headerTitleStyle: {
-            fontWeight: "700",
-          },
-        }}
-      />
-      <FloatingProductSearch />
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={styles.gestureRoot}>
+      <HeroUINativeProvider>
+        <SafeAreaProvider>
+          <StatusBar style="light" />
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              headerStyle: {
+                backgroundColor: "#0f1320",
+              },
+              headerTintColor: "#ffffff",
+              contentStyle: {
+                backgroundColor: "#080b16",
+              },
+              headerTitleStyle: {
+                fontWeight: "700",
+              },
+            }}
+          />
+          <FloatingProductSearch />
+          <FloatingQuickActions />
+        </SafeAreaProvider>
+      </HeroUINativeProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -58,5 +68,8 @@ const styles = StyleSheet.create({
   loadingLabel: {
     color: "#ffffff",
     fontSize: 16,
+  },
+  gestureRoot: {
+    flex: 1,
   },
 });

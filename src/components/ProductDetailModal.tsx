@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   TextInput,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import {
   Category,
   InventoryMovement,
@@ -409,42 +410,189 @@ export const ProductDetailModal = ({
       <View style={styles.backdrop}>
         <View style={styles.sheet}>
           <View style={styles.header}>
-            <Text style={styles.title}>{product.name}</Text>
+            <View style={styles.titleRow}>
+              <Ionicons name="cube" size={20} color="#ffffff" />
+              <Text style={styles.title}>{product.name}</Text>
+            </View>
             <Pressable onPress={onClose} style={styles.closeButton}>
-              <Text style={styles.closeLabel}>Cerrar</Text>
+              <Ionicons name="close" size={18} color="rgba(255,255,255,0.7)" />
             </Pressable>
           </View>
 
           <ScrollView contentContainerStyle={styles.content}>
             {previewUri ? (
-              <View style={styles.imageContainer}>
+              <View style={styles.imageContainerWithOverlay}>
                 <Image source={{ uri: previewUri }} style={styles.image} />
+                <View style={styles.imageOverlay}>
+                  <View style={styles.overlayContent}>
+                    <View style={styles.infoRow}>
+                      <Text style={styles.infoLabel}>Tienda</Text>
+                      <Text style={[styles.infoValue, styles.overlayText]}>
+                        {store.name}
+                      </Text>
+                    </View>
+                    {category ? (
+                      <View style={styles.infoRow}>
+                        <Text style={styles.infoLabel}>Categoría</Text>
+                        <Text style={[styles.infoValue, styles.overlayText]}>
+                          {category.name}
+                        </Text>
+                      </View>
+                    ) : null}
+                    <View style={styles.infoRow}>
+                      <Text style={styles.infoLabel}>Unidad de venta</Text>
+                      <Text style={[styles.infoValue, styles.overlayText]}>
+                        {unitLabel}
+                      </Text>
+                    </View>
+                    {product.description ? (
+                      <View style={styles.descriptionBox}>
+                        <Text style={styles.descriptionText}>
+                          {product.description}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                </View>
               </View>
             ) : null}
 
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Datos generales</Text>
-              <View style={styles.infoRow}>
-                <Text style={styles.infoLabel}>Tienda</Text>
-                <Text style={styles.infoValue}>{store.name}</Text>
-              </View>
-              {category ? (
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Categoría</Text>
-                  <Text style={styles.infoValue}>{category.name}</Text>
-                </View>
-              ) : null}
-              <View style={styles.infoRow}>
-                <Text style={styles.infoLabel}>Unidad de venta</Text>
-                <Text style={styles.infoValue}>{unitLabel}</Text>
-              </View>
-              {product.description ? (
-                <View style={styles.descriptionBox}>
-                  <Text style={styles.descriptionText}>
-                    {product.description}
+              <Text style={styles.sectionTitle}>Acciones</Text>
+              <View style={styles.actionRow}>
+                <Pressable
+                  style={[styles.primaryButton, styles.editButton]}
+                  onPress={() => onEdit(product)}
+                  disabled={pendingAction !== null}
+                >
+                  <Ionicons name="create" size={18} color="#9aa4ff" />
+                  <Text style={styles.primaryButtonLabel}>Editar</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.primaryButton, styles.offerButton]}
+                  onPress={() =>
+                    openOfferModal(product.hasOffer ? "disable" : "enable")
+                  }
+                  disabled={pendingAction !== null}
+                >
+                  <Ionicons
+                    name={product.hasOffer ? "close-circle" : "pricetag"}
+                    size={18}
+                    color={product.hasOffer ? "#ff99b2" : "#4cc38a"}
+                  />
+                  <Text style={styles.offerButtonLabel}>
+                    {product.hasOffer ? "Quitar" : "Oferta"}
                   </Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.primaryButton, styles.deleteButton]}
+                  onPress={() => onDelete(product)}
+                  disabled={pendingAction !== null}
+                >
+                  <Ionicons name="trash" size={18} color="#ff99b2" />
+                  <Text style={styles.deleteButtonLabel}>Borrar</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Stock</Text>
+              <View style={styles.stockRow}>
+                <Text style={styles.stockValue}>{product.stock}</Text>
+                <Text style={styles.stockLabel}>
+                  {product.stock === 1
+                    ? `${unitLabel.toLowerCase()} disponible`
+                    : `${unitPluralLabel.toLowerCase()} disponibles`}
+                </Text>
+              </View>
+              <View style={styles.stockActionsRow}>
+                <View style={styles.stockActionGroup}>
+                  <Pressable
+                    style={[styles.stockButton, styles.stockButtonIncrease]}
+                    onPress={() => openAdjustment("increase")}
+                    disabled={pendingAction !== null}
+                  >
+                    <Ionicons name="add-circle" size={28} color="#4cc38a" />
+                  </Pressable>
+                  <Text style={styles.stockButtonText}>Sumar</Text>
                 </View>
-              ) : null}
+                <View style={styles.stockActionGroup}>
+                  <Pressable
+                    style={[styles.stockButton, styles.stockButtonDecrease]}
+                    onPress={() => openAdjustment("decrease")}
+                    disabled={pendingAction !== null}
+                  >
+                    <Ionicons name="remove-circle" size={28} color="#ff99b2" />
+                  </Pressable>
+                  <Text style={styles.stockButtonText}>Restar</Text>
+                </View>
+                <View style={styles.stockActionGroup}>
+                  <Pressable
+                    style={[
+                      styles.stockButton,
+                      styles.stockButtonTransfer,
+                      availability.length === 0 && styles.disabledButton,
+                    ]}
+                    onPress={openTransferModal}
+                    disabled={
+                      pendingAction !== null || availability.length === 0
+                    }
+                  >
+                    <Ionicons
+                      name="swap-horizontal"
+                      size={28}
+                      color="#9aa4ff"
+                    />
+                  </Pressable>
+                  <Text style={styles.stockButtonText}>Mover</Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Códigos</Text>
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>UPC</Text>
+                <View style={styles.codeValueRow}>
+                  <Text style={styles.infoValue}>
+                    {product.barcodes?.upc ?? "Sin especificar"}
+                  </Text>
+                  {product.barcodes?.upc ? (
+                    <Pressable
+                      style={styles.codeButton}
+                      onPress={() =>
+                        setBarcodePreview({
+                          label: "Código UPC",
+                          value: product.barcodes?.upc ?? "",
+                        })
+                      }
+                    >
+                      <Text style={styles.codeButtonLabel}>Ver</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>Caja</Text>
+                <View style={styles.codeValueRow}>
+                  <Text style={styles.infoValue}>
+                    {product.barcodes?.box ?? "Sin especificar"}
+                  </Text>
+                  {product.barcodes?.box ? (
+                    <Pressable
+                      style={styles.codeButton}
+                      onPress={() =>
+                        setBarcodePreview({
+                          label: "Código de caja",
+                          value: product.barcodes?.box ?? "",
+                        })
+                      }
+                    >
+                      <Text style={styles.codeButtonLabel}>Ver</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
             </View>
 
             <View style={styles.section}>
@@ -511,52 +659,6 @@ export const ProductDetailModal = ({
               ) : null}
             </View>
 
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Códigos</Text>
-              <View style={styles.infoRow}>
-                <Text style={styles.infoLabel}>UPC</Text>
-                <View style={styles.codeValueRow}>
-                  <Text style={styles.infoValue}>
-                    {product.barcodes?.upc ?? "Sin especificar"}
-                  </Text>
-                  {product.barcodes?.upc ? (
-                    <Pressable
-                      style={styles.codeButton}
-                      onPress={() =>
-                        setBarcodePreview({
-                          label: "Código UPC",
-                          value: product.barcodes?.upc ?? "",
-                        })
-                      }
-                    >
-                      <Text style={styles.codeButtonLabel}>Ver</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              </View>
-              <View style={styles.infoRow}>
-                <Text style={styles.infoLabel}>Caja</Text>
-                <View style={styles.codeValueRow}>
-                  <Text style={styles.infoValue}>
-                    {product.barcodes?.box ?? "Sin especificar"}
-                  </Text>
-                  {product.barcodes?.box ? (
-                    <Pressable
-                      style={styles.codeButton}
-                      onPress={() =>
-                        setBarcodePreview({
-                          label: "Código de caja",
-                          value: product.barcodes?.box ?? "",
-                        })
-                      }
-                    >
-                      <Text style={styles.codeButtonLabel}>Ver</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              </View>
-            </View>
-
             {discountEntries.length > 0 ? (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Promoción</Text>
@@ -566,6 +668,47 @@ export const ProductDetailModal = ({
                     <Text style={styles.infoValue}>{entry.value}</Text>
                   </View>
                 ))}
+              </View>
+            ) : null}
+
+            {recentMovements.length > 0 ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Movimientos</Text>
+                <View style={styles.movementList}>
+                  {recentMovements.map((movement) => (
+                    <View style={styles.movementRow} key={movement.id}>
+                      <View style={styles.movementHeader}>
+                        <Text
+                          style={[
+                            styles.movementDelta,
+                            movement.delta > 0
+                              ? styles.movementIncrease
+                              : movement.delta < 0
+                              ? styles.movementDecrease
+                              : null,
+                          ]}
+                        >
+                          {movement.delta > 0
+                            ? `+${movement.delta}`
+                            : movement.delta}
+                        </Text>
+                        <Text style={styles.movementTimestamp}>
+                          {new Date(movement.createdAt).toLocaleString()}
+                        </Text>
+                      </View>
+                      <Text style={styles.movementReason}>
+                        {movementReasonLabel(movement)}
+                      </Text>
+                      <Text style={styles.movementStock}>
+                        Stock: {movement.previousStock} →{" "}
+                        {movement.resultingStock}
+                      </Text>
+                      {movement.note ? (
+                        <Text style={styles.movementNote}>{movement.note}</Text>
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
               </View>
             ) : null}
 
@@ -610,115 +753,6 @@ export const ProductDetailModal = ({
                   </View>
                 </>
               )}
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Stock</Text>
-              <View style={styles.stockRow}>
-                <Text style={styles.stockValue}>{product.stock}</Text>
-                <Text style={styles.stockLabel}>
-                  {product.stock === 1
-                    ? `${unitLabel.toLowerCase()} disponible`
-                    : `${unitPluralLabel.toLowerCase()} disponibles`}
-                </Text>
-              </View>
-              <View style={styles.actionRow}>
-                <Pressable
-                  style={styles.secondaryButton}
-                  onPress={() => openAdjustment("increase")}
-                  disabled={pendingAction !== null}
-                >
-                  <Text style={styles.secondaryLabel}>Sumar unidades</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.secondaryButton, styles.dangerButton]}
-                  onPress={() => openAdjustment("decrease")}
-                  disabled={pendingAction !== null}
-                >
-                  <Text style={[styles.secondaryLabel, styles.dangerLabel]}>
-                    Restar unidades
-                  </Text>
-                </Pressable>
-                <Pressable
-                  style={[
-                    styles.secondaryButton,
-                    availability.length === 0 && styles.disabledButton,
-                  ]}
-                  onPress={openTransferModal}
-                  disabled={pendingAction !== null || availability.length === 0}
-                >
-                  <Text style={styles.secondaryLabel}>Transferir</Text>
-                </Pressable>
-              </View>
-              {recentMovements.length > 0 ? (
-                <View style={styles.movementList}>
-                  <Text style={styles.metaLabel}>Movimientos recientes</Text>
-                  {recentMovements.map((movement) => (
-                    <View style={styles.movementRow} key={movement.id}>
-                      <View style={styles.movementHeader}>
-                        <Text
-                          style={[
-                            styles.movementDelta,
-                            movement.delta > 0
-                              ? styles.movementIncrease
-                              : movement.delta < 0
-                              ? styles.movementDecrease
-                              : null,
-                          ]}
-                        >
-                          {movement.delta > 0
-                            ? `+${movement.delta}`
-                            : movement.delta}
-                        </Text>
-                        <Text style={styles.movementTimestamp}>
-                          {new Date(movement.createdAt).toLocaleString()}
-                        </Text>
-                      </View>
-                      <Text style={styles.movementReason}>
-                        {movementReasonLabel(movement)}
-                      </Text>
-                      <Text style={styles.movementStock}>
-                        Stock: {movement.previousStock} →{" "}
-                        {movement.resultingStock}
-                      </Text>
-                      {movement.note ? (
-                        <Text style={styles.movementNote}>{movement.note}</Text>
-                      ) : null}
-                    </View>
-                  ))}
-                </View>
-              ) : null}
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Acciones</Text>
-              <View style={styles.actionRow}>
-                <Pressable
-                  style={styles.secondaryButton}
-                  onPress={() => onEdit(product)}
-                  disabled={pendingAction !== null}
-                >
-                  <Text style={styles.secondaryLabel}>Editar</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.secondaryButton, styles.offerButton]}
-                  onPress={() =>
-                    openOfferModal(product.hasOffer ? "disable" : "enable")
-                  }
-                  disabled={pendingAction !== null}
-                >
-                  <Text style={styles.offerLabel}>
-                    {product.hasOffer ? "Desactivar oferta" : "Activar oferta"}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.secondaryButton, styles.dangerButton]}
-                  onPress={() => onDelete(product)}
-                  disabled={pendingAction !== null}
-                >
-                  <Text style={styles.dangerLabel}>Eliminar</Text>
-                </Pressable>
-              </View>
             </View>
 
             {availability.length > 0 ? (
@@ -1019,31 +1053,50 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   header: {
-    paddingHorizontal: 24,
-    paddingVertical: 18,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     borderBottomWidth: 1,
     borderBottomColor: "rgba(255,255,255,0.08)",
+    marginBottom: 4,
+  },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
   },
   title: {
     color: "#ffffff",
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "700",
     flex: 1,
-    marginRight: 16,
   },
   closeButton: {
-    padding: 8,
-  },
-  closeLabel: {
-    color: "rgba(255,255,255,0.7)",
+    width: 36,
+    height: 36,
+    borderRadius: 9,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   content: {
-    padding: 24,
-    gap: 20,
+    paddingHorizontal: 0,
+    paddingTop: 0,
     paddingBottom: 48,
+    gap: 0,
+  },
+  imageContainerWithOverlay: {
+    width: "100%",
+    aspectRatio: 1.2,
+    borderRadius: 0,
+    overflow: "hidden",
+    backgroundColor: "#11162a",
+    position: "relative",
   },
   imageContainer: {
     width: "100%",
@@ -1057,13 +1110,34 @@ const styles = StyleSheet.create({
     height: "100%",
     resizeMode: "cover",
   },
+  imageOverlay: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: "rgba(15, 19, 32, 0.95)",
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    gap: 12,
+  },
+  overlayContent: {
+    gap: 10,
+  },
+  overlayText: {
+    color: "#ffffff",
+  },
   section: {
     gap: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
   },
   sectionTitle: {
     color: "#ffffff",
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 4,
   },
   infoRow: {
     flexDirection: "row",
@@ -1168,8 +1242,7 @@ const styles = StyleSheet.create({
   },
   actionRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
+    gap: 8,
   },
   movementList: {
     marginTop: 16,
@@ -1244,6 +1317,80 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.7)",
     fontSize: 13,
   },
+  stockActionsRow: {
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between",
+  },
+  stockActionGroup: {
+    alignItems: "center",
+    gap: 8,
+    flex: 1,
+  },
+  stockButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+  },
+  stockButtonIncrease: {
+    backgroundColor: "rgba(76,195,138,0.12)",
+    borderColor: "rgba(76,195,138,0.25)",
+  },
+  stockButtonDecrease: {
+    backgroundColor: "rgba(255,99,132,0.12)",
+    borderColor: "rgba(255,99,132,0.25)",
+  },
+  stockButtonTransfer: {
+    backgroundColor: "rgba(86,104,255,0.12)",
+    borderColor: "rgba(86,104,255,0.25)",
+  },
+  stockButtonText: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 12,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  primaryButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    flexDirection: "column",
+    gap: 6,
+  },
+  editButton: {
+    backgroundColor: "rgba(86,104,255,0.12)",
+    borderColor: "rgba(86,104,255,0.25)",
+  },
+  primaryButtonLabel: {
+    color: "#9aa4ff",
+    fontWeight: "600",
+    fontSize: 12,
+  },
+  offerButton: {
+    backgroundColor: "rgba(76,195,138,0.12)",
+    borderColor: "rgba(76,195,138,0.25)",
+  },
+  offerButtonLabel: {
+    color: "#4cc38a",
+    fontWeight: "600",
+    fontSize: 12,
+  },
+  deleteButton: {
+    backgroundColor: "rgba(255,99,132,0.12)",
+    borderColor: "rgba(255,99,132,0.25)",
+  },
+  deleteButtonLabel: {
+    color: "#ff99b2",
+    fontWeight: "600",
+    fontSize: 12,
+  },
   secondaryButton: {
     backgroundColor: "rgba(86,104,255,0.18)",
     paddingHorizontal: 18,
@@ -1254,15 +1401,9 @@ const styles = StyleSheet.create({
     color: "#b4bcff",
     fontWeight: "600",
   },
-  offerButton: {
-    backgroundColor: "rgba(76,195,138,0.2)",
-  },
   offerLabel: {
     color: "#4cc38a",
     fontWeight: "700",
-  },
-  dangerButton: {
-    backgroundColor: "rgba(255,99,132,0.16)",
   },
   dangerLabel: {
     color: "#ff99b2",

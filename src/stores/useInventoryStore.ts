@@ -26,7 +26,7 @@ import {
 
 const STORAGE_KEY = "nintendo-inventory-state";
 export const INVENTORY_STORAGE_KEY = STORAGE_KEY;
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 8;
 const MAX_PRICE_HISTORY = 120;
 const MAX_CHANGE_LOG_ENTRIES = 50;
 
@@ -641,6 +641,12 @@ const normalizeProductRecord = (raw: any): Product | null => {
       : String(raw.categoryId ?? "");
   const name = typeof raw.name === "string" ? raw.name.trim() : "";
   const price = Number(raw.price ?? 0);
+  const onlinePriceCandidate =
+    raw.onlinePrice !== undefined ? Number(raw.onlinePrice) : undefined;
+  const onlinePrice =
+    onlinePriceCandidate !== undefined && !Number.isNaN(onlinePriceCandidate)
+      ? onlinePriceCandidate
+      : undefined;
   const stock = Math.max(0, Math.floor(Number(raw.stock ?? 0)));
 
   if (!id || !storeId || !categoryId || !name || Number.isNaN(price)) {
@@ -735,6 +741,7 @@ const normalizeProductRecord = (raw: any): Product | null => {
     unit,
     templateId,
     price,
+    onlinePrice,
     previousPrice,
     priceUpdatedAt,
     priceHistory: history.slice(-MAX_PRICE_HISTORY),
@@ -1112,6 +1119,7 @@ interface AddProductPayload {
   categoryId: string;
   name: string;
   price: number;
+  onlinePrice?: number;
   stock: number;
   unit?: ProductUnit;
   imageUrl?: string;
@@ -1131,6 +1139,7 @@ interface UpdateProductPayload {
       Product,
       | "name"
       | "price"
+      | "onlinePrice"
       | "stock"
       | "imageUrl"
       | "imageAsset"
@@ -1723,6 +1732,10 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
         unit: normalizedUnit,
         templateId: templateIdUsed,
         price,
+        onlinePrice:
+          typeof (onlinePrice as number | undefined) === "number"
+            ? onlinePrice
+            : undefined,
         previousPrice: undefined,
         priceUpdatedAt,
         priceHistory,
@@ -1839,7 +1852,10 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
         : current.discountInfo;
 
       const nextPrice = data.price !== undefined ? data.price : current.price;
+      const nextOnlinePrice =
+        data.onlinePrice !== undefined ? data.onlinePrice : current.onlinePrice;
       const priceChanged = nextPrice !== current.price;
+      const onlinePriceChanged = nextOnlinePrice !== current.onlinePrice;
 
       const requestedHasOffer =
         data.hasOffer !== undefined ? data.hasOffer : current.hasOffer;
@@ -1924,6 +1940,18 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
         );
       }
 
+      if (onlinePriceChanged) {
+        const before =
+          current.onlinePrice !== undefined
+            ? formatCurrency(current.onlinePrice)
+            : "sin precio online";
+        const after =
+          nextOnlinePrice !== undefined
+            ? formatCurrency(nextOnlinePrice)
+            : "sin precio online";
+        changes.push(`Precio online: ${before} -> ${after}`);
+      }
+
       const formatOffer = (active: boolean, value?: number): string =>
         active && value !== undefined ? formatCurrency(value) : "sin oferta";
 
@@ -1993,10 +2021,12 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
       }
 
       let summary: string | undefined;
-      if (priceChanged && stockChanged) {
+      if ((priceChanged || onlinePriceChanged) && stockChanged) {
         summary = "Precio y stock actualizados";
       } else if (priceChanged) {
         summary = "Precio actualizado";
+      } else if (onlinePriceChanged) {
+        summary = "Precio online actualizado";
       } else if (stockChanged) {
         summary = "Stock ajustado";
       } else if (offerChanged) {
@@ -2053,6 +2083,7 @@ export const useInventoryStore = create<InventoryStore>((set, get) => {
         barcodes: nextBarcodes,
         discountInfo: nextDiscountInfo,
         price: nextPrice,
+        onlinePrice: nextOnlinePrice,
         previousPrice: nextPreviousPrice,
         priceUpdatedAt: nextPriceUpdatedAt,
         priceHistory: nextHistory,

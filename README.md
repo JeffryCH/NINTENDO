@@ -145,6 +145,16 @@ Si solo necesitas un instalador Android para compartir fuera de la tienda:
 - **Registro de productos** con creación automática de categorías, precio, stock, imagen y oferta opcional.
 - **Persistencia local** mediante AsyncStorage y Zustand para reabrir la app sin perder datos.
 
+### Reportes de inventario
+
+- Exporta listados por tienda o global (desde Index).
+- Agrupa por categorías con secciones de **Disponibles** y **Agotados**.
+- Muestra por producto: cantidad, **precio regular**, **precio de oferta** (si aplica) y **precio online**.
+- Incluye códigos de barra **UPC** y **Caja** como imagen (SVG offline) y texto legible.
+- Añade opciones previas a exportar: **comentario** general y **nota de llegada** para la sección de Agotados.
+- Ofrece acción de **“Copiar como texto”** con vista previa para compartir por mensajería.
+- El campo de **precio online** está disponible al crear/editar productos y se integra en los reportes.
+
 ## Estructura de carpetas
 
 - `app/`: rutas y pantallas gestionadas mediante Expo Router.

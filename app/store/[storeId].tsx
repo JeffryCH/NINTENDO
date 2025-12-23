@@ -10,9 +10,14 @@ import {
   Pressable,
   Alert,
   TextInput,
+  Modal,
+  TouchableWithoutFeedback,
 } from "react-native";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
+import { Surface } from "heroui-native";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useInventoryStore } from "@/stores/useInventoryStore";
 import { ProductCard } from "@/components/ProductCard";
 import { AddProductModal, ProductFormData } from "@/components/AddProductModal";
@@ -20,8 +25,12 @@ import { AddStoreModal } from "@/components/AddStoreModal";
 import { CategoryModal } from "@/components/CategoryModal";
 import { ProductDetailModal } from "@/components/ProductDetailModal";
 import { BarcodeScannerModal } from "@/components/BarcodeScannerModal";
+import { BarcodePreviewModal } from "@/components/BarcodePreviewModal";
 import { formatCurrency } from "@/utils/formatCurrency";
-import { buildStoreInventoryReportHtml } from "@/utils/reporting";
+import {
+  buildStoreListingReportHtml,
+  type SimpleProductLine,
+} from "@/utils/reporting";
 import { resolveMediaUri } from "@/utils/media";
 import { productMatchesQuery } from "@/utils/productSearch";
 import { CategorySummaryModal } from "@/components/CategorySummaryModal";
@@ -64,6 +73,7 @@ export default function StoreDetailScreen() {
   const params = useLocalSearchParams<{
     storeId: string | string[];
     productId?: string | string[];
+    action?: string | string[];
   }>();
   const storeIdParam = Array.isArray(params.storeId)
     ? params.storeId[0]
@@ -74,6 +84,9 @@ export default function StoreDetailScreen() {
     ? productIdParamRaw[0]
     : productIdParamRaw;
   const normalizedProductIdParam = sanitizeProductIdParam(productIdParam);
+  const actionParam = Array.isArray(params.action)
+    ? params.action[0]
+    : params.action;
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [minStockFilter, setMinStockFilter] = useState("");
@@ -98,10 +111,21 @@ export default function StoreDetailScreen() {
   );
   const [barcodeScannerVisible, setBarcodeScannerVisible] = useState(false);
   const [exportingReport, setExportingReport] = useState(false);
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [categorySummaryState, setCategorySummaryState] = useState<{
     visible: boolean;
     summary: CategorySummaryEntry | null;
   }>({ visible: false, summary: null });
+  const [quickVisible, setQuickVisible] = useState(false);
+  const [quickIndex, setQuickIndex] = useState(0);
+  const [quickQty, setQuickQty] = useState("1");
+  const [quickBarcode, setQuickBarcode] = useState<{
+    open: boolean;
+    code: string | null;
+    label: string;
+  }>({ open: false, code: null, label: "" });
+  const [reorderVisible, setReorderVisible] = useState(false);
+  const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
 
   const store = useInventoryStore((state) =>
     state.stores.find((item) => item.id === storeId)
@@ -234,6 +258,33 @@ export default function StoreDetailScreen() {
     return sorted;
   }, [filteredProducts, sortOption]);
 
+  const idToIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    sortedProducts.forEach((p, i) => map.set(p.id, i));
+    return map;
+  }, [sortedProducts]);
+
+  const openQuickForProduct = useCallback(
+    (productId: string) => {
+      const idx = idToIndex.get(productId);
+      if (idx === undefined) return;
+      setQuickIndex(idx);
+      setQuickQty("1");
+      setQuickVisible(true);
+    },
+    [idToIndex]
+  );
+
+  const currentQuickProduct = sortedProducts[quickIndex];
+
+  const openCategorySummary = (entry: CategorySummaryEntry) => {
+    setCategorySummaryState({ visible: true, summary: entry });
+  };
+
+  const closeCategorySummary = () => {
+    setCategorySummaryState({ visible: false, summary: null });
+  };
+
   const hasActiveFilters = useMemo(
     () =>
       offerFilter === "offers" ||
@@ -245,7 +296,19 @@ export default function StoreDetailScreen() {
   const groupedProducts = useMemo(() => {
     const map = new Map<string, typeof sortedProducts>();
 
-    categories.forEach((category) => {
+    const orderedCategories = [...categories];
+    if (categoryOrder.length > 0) {
+      orderedCategories.sort((a, b) => {
+        const ia = categoryOrder.indexOf(a.id);
+        const ib = categoryOrder.indexOf(b.id);
+        return (
+          (ia === -1 ? Number.MAX_SAFE_INTEGER : ia) -
+          (ib === -1 ? Number.MAX_SAFE_INTEGER : ib)
+        );
+      });
+    }
+
+    orderedCategories.forEach((category) => {
       map.set(category.id, []);
     });
 
@@ -272,6 +335,50 @@ export default function StoreDetailScreen() {
   const groupedEntries = useMemo(
     () => Array.from(groupedProducts.entries()),
     [groupedProducts]
+  );
+
+  const categorySummaries = useMemo(() => {
+    return categories.map((category) => {
+      const categoryProducts = products.filter(
+        (product) => product.categoryId === category.id
+      );
+      const metrics = summarizeCategoryProducts(categoryProducts);
+      return { category, metrics, products: categoryProducts };
+    });
+  }, [categories, products]);
+
+  useEffect(() => {
+    const loadOrder = async () => {
+      if (!storeId) return;
+      try {
+        const raw = await AsyncStorage.getItem(
+          `nintendo-category-order:${storeId}`
+        );
+        if (raw) {
+          const parsed = JSON.parse(raw) as string[];
+          setCategoryOrder(Array.isArray(parsed) ? parsed : []);
+        } else {
+          setCategoryOrder([]);
+        }
+      } catch {
+        setCategoryOrder([]);
+      }
+    };
+    loadOrder();
+  }, [storeId]);
+
+  const persistCategoryOrder = useCallback(
+    async (order: string[]) => {
+      if (!storeId) return;
+      setCategoryOrder(order);
+      try {
+        await AsyncStorage.setItem(
+          `nintendo-category-order:${storeId}`,
+          JSON.stringify(order)
+        );
+      } catch {}
+    },
+    [storeId]
   );
 
   const isSearching = searchQuery.trim().length > 0;
@@ -485,6 +592,7 @@ export default function StoreDetailScreen() {
           data: {
             name: data.name,
             price: data.price,
+            onlinePrice: data.onlinePrice,
             stock: data.stock,
             imageUrl: data.imageUrl,
             imageAsset: data.imageAsset,
@@ -502,6 +610,7 @@ export default function StoreDetailScreen() {
           categoryId,
           name: data.name,
           price: data.price,
+          onlinePrice: data.onlinePrice,
           stock: data.stock,
           imageUrl: data.imageUrl,
           imageAsset: data.imageAsset,
@@ -600,6 +709,25 @@ export default function StoreDetailScreen() {
     }
   };
 
+  const handleTransferStock = async (payload: {
+    productId: string;
+    targetProductId: string;
+    quantity: number;
+    note?: string;
+  }): Promise<void> => {
+    try {
+      await transferProductStock(payload);
+      setError(null);
+    } catch (transferError) {
+      const message =
+        transferError instanceof Error
+          ? transferError.message
+          : "No se pudo transferir el stock.";
+      setError(message);
+      throw transferError;
+    }
+  };
+
   const handleExportPdf = useCallback(async () => {
     if (!store) return;
 
@@ -670,22 +798,24 @@ export default function StoreDetailScreen() {
         offerMatches: entry.offerMatches,
       }));
 
-      const html = buildStoreInventoryReportHtml({
-        storeName: store.name,
-        storeLocation: store.location,
-        storeDescription: store.description,
+      const simpleProducts: SimpleProductLine[] = products.map((p) => ({
+        name: p.name,
+        stock: p.stock,
+        categoryName: categoryMap.get(p.categoryId)?.name ?? "Sin categoría",
+        price: p.price,
+        offerPrice:
+          p.hasOffer && p.offerPrice !== undefined ? p.offerPrice : undefined,
+        onlinePrice: p.onlinePrice,
+        upc: p.barcodes?.upc ?? null,
+        box: p.barcodes?.box ?? null,
+      }));
+
+      const html = buildStoreListingReportHtml({
+        title: `Inventario de ${store.name}`,
+        subtitle: store.location ?? undefined,
         generatedAt: new Date(),
-        metrics: {
-          totalProducts: products.length,
-          totalStock: stats.totalStock,
-          inventoryValue: stats.value,
-          offerCount: stats.offerCount,
-          lowStock: stats.lowStock,
-        },
-        categorySummaries,
-        lowStockProducts,
-        offerProducts,
-        crossStoreSummary: crossStoreReport,
+        products: simpleProducts,
+        groupByCategory: true,
       });
 
       const file = await Print.printToFileAsync({ html });
@@ -744,6 +874,42 @@ export default function StoreDetailScreen() {
       }
     }
   }, [products, selectedProductId, normalizedProductIdParam, router]);
+
+  useEffect(() => {
+    if (actionParam === "edit-store" && !storeModalVisible) {
+      setStoreModalVisible(true);
+      router.setParams({ action: undefined });
+    }
+    if (actionParam === "scan" && !barcodeScannerVisible) {
+      setBarcodeScannerVisible(true);
+      router.setParams({ action: undefined });
+    }
+    if (actionParam === "add-category" && !categoryModalState.visible) {
+      openCategoryModal("create", null);
+      router.setParams({ action: undefined });
+    }
+    if (actionParam === "add-product" && !productModalState.visible) {
+      openProductModal("create", null);
+      router.setParams({ action: undefined });
+    }
+    if (actionParam === "export-pdf" && !exportingReport) {
+      handleExportPdf();
+      router.setParams({ action: undefined });
+    }
+    if (actionParam === "sync-movements" && pendingMovementsCount > 0) {
+      handleSyncPendingMovements();
+      router.setParams({ action: undefined });
+    }
+  }, [
+    actionParam,
+    storeModalVisible,
+    barcodeScannerVisible,
+    categoryModalState.visible,
+    productModalState.visible,
+    exportingReport,
+    pendingMovementsCount,
+    router,
+  ]);
 
   const openProductDetail = (product: Product) => {
     setSelectedProductId(product.id);
@@ -949,68 +1115,12 @@ export default function StoreDetailScreen() {
         <View style={styles.notFoundContent}>
           <Text style={styles.notFoundTitle}>Tienda no encontrada</Text>
           <Text style={styles.notFoundSubtitle}>
-            La tienda no existe o fue eliminada.
+            Verifica el enlace o regresa a la pantalla principal.
           </Text>
-          <Pressable
-            style={styles.primaryButton}
-            onPress={() => router.replace("/")}
-          >
-            <Text style={styles.primaryButtonLabel}>Volver a listado</Text>
-          </Pressable>
         </View>
       </SafeAreaView>
     );
   }
-
-  const heroImageUri = resolveMediaUri(store.imageAsset, store.imageUrl);
-  const categorySummaries = useMemo<CategorySummaryEntry[]>(
-    () =>
-      categories.map((category) => {
-        const categoryProducts = products.filter(
-          (product) => product.categoryId === category.id
-        );
-        const metrics = summarizeCategoryProducts(categoryProducts);
-        return { category, metrics, products: categoryProducts };
-      }),
-    [categories, products]
-  );
-
-  const openCategorySummary = (summary: CategorySummaryEntry) => {
-    setCategorySummaryState({ visible: true, summary });
-  };
-
-  const closeCategorySummary = () => {
-    setCategorySummaryState({ visible: false, summary: null });
-  };
-
-  const handleTransferStock = async ({
-    productId,
-    targetProductId,
-    quantity,
-    note,
-  }: {
-    productId: string;
-    targetProductId: string;
-    quantity: number;
-    note?: string;
-  }) => {
-    try {
-      await transferProductStock({
-        productId,
-        targetProductId,
-        quantity,
-        note,
-      });
-      setError(null);
-    } catch (transferError) {
-      const message =
-        transferError instanceof Error
-          ? transferError.message
-          : "No se pudo transferir el stock.";
-      setError(message);
-      throw transferError;
-    }
-  };
 
   const clearProductFilters = () => {
     setMinStockFilter("");
@@ -1068,95 +1178,258 @@ export default function StoreDetailScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.hero}>
-          {heroImageUri ? (
-            <Image
-              source={{ uri: heroImageUri }}
-              style={styles.heroImage}
-              resizeMode="cover"
-            />
-          ) : null}
-          <View style={styles.heroOverlay}>
-            <Pressable style={styles.backButton} onPress={() => router.back()}>
-              <Text style={styles.backLabel}>Regresar</Text>
-            </Pressable>
-            <Text style={styles.heroTitle}>{store.name}</Text>
+        <View style={styles.analyticsSection}>
+          <Text style={styles.heroTitle}>{store.name}</Text>
+          {store.location ? (
             <Text style={styles.heroSubtitle}>{store.location}</Text>
-            {store.description ? (
-              <Text style={styles.heroDescription}>{store.description}</Text>
-            ) : null}
-            <View style={styles.heroActions}>
-              <Pressable
-                style={styles.secondaryButton}
-                onPress={() => {
-                  setError(null);
-                  setStoreModalVisible(true);
-                }}
-              >
-                <Text style={styles.secondaryLabel}>Editar tienda</Text>
-              </Pressable>
-              {pendingMovementsCount > 0 ? (
-                <Pressable
-                  style={styles.secondaryButton}
-                  onPress={handleSyncPendingMovements}
-                >
-                  <Text style={styles.secondaryLabel}>
-                    {`Sincronizar movimientos (${pendingMovementsCount})`}
-                  </Text>
-                </Pressable>
-              ) : null}
-              <Pressable
-                style={[styles.secondaryButton, styles.dangerButton]}
-                onPress={handleRemoveStore}
-              >
-                <Text style={[styles.secondaryLabel, styles.dangerLabel]}>
-                  Eliminar tienda
-                </Text>
-              </Pressable>
-            </View>
-            {pendingMovementsCount > 0 ? (
+          ) : null}
+          {pendingMovementsCount > 0 ? (
+            <View style={styles.pendingRow}>
+              <Ionicons name="warning" size={16} color="#ffb74d" />
               <Text style={styles.pendingNotice}>
                 {pendingMovementsCount === 1
-                  ? "Hay 1 movimiento pendiente de sincronización."
-                  : `Hay ${pendingMovementsCount} movimientos pendientes de sincronización.`}
+                  ? "1 movimiento pendiente de sincronización"
+                  : `${pendingMovementsCount} movimientos pendientes`}
               </Text>
-            ) : null}
+            </View>
+          ) : null}
+          <View style={{ marginTop: 8 }}>
+            <Pressable
+              style={styles.secondaryButton}
+              onPress={() => setReorderVisible(true)}
+            >
+              <Text style={styles.secondaryLabel}>Ordenar categorías</Text>
+            </Pressable>
           </View>
+        </View>
+
+        <View style={styles.searchContainer}>
+          <Pressable
+            style={styles.filterToggle}
+            onPress={() => setFiltersExpanded(!filtersExpanded)}
+          >
+            <Ionicons
+              name={filtersExpanded ? "chevron-down" : "chevron-forward"}
+              size={20}
+              color="#9aa4ff"
+            />
+            <Text style={styles.filterToggleLabel}>Filtros y búsqueda</Text>
+            {(hasActiveFilters || searchQuery.trim()) && (
+              <View style={styles.filterBadge}>
+                <Text style={styles.filterBadgeText}>●</Text>
+              </View>
+            )}
+          </Pressable>
+
+          {filtersExpanded && (
+            <View style={styles.filterBlock}>
+              <View style={styles.searchRow}>
+                <TextInput
+                  style={[styles.searchInput, styles.searchField]}
+                  placeholder="Buscar productos..."
+                  placeholderTextColor="rgba(255,255,255,0.45)"
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                  returnKeyType="search"
+                  selectionColor="#5668ff"
+                  keyboardAppearance="dark"
+                />
+              </View>
+
+              <View style={styles.filterHeader}>
+                <Text style={styles.filterLabel}>Rango de stock</Text>
+                <Pressable
+                  style={[
+                    styles.clearFiltersButton,
+                    !canResetFilters && styles.clearFiltersButtonDisabled,
+                  ]}
+                  onPress={clearProductFilters}
+                  disabled={!canResetFilters}
+                >
+                  <Text
+                    style={[
+                      styles.clearFiltersLabel,
+                      !canResetFilters && styles.clearFiltersLabelDisabled,
+                    ]}
+                  >
+                    Limpiar
+                  </Text>
+                </Pressable>
+              </View>
+
+              <View style={styles.filterChipsRow}>
+                <Pressable
+                  style={[
+                    styles.filterChip,
+                    stockRangeAllActive && styles.filterChipActive,
+                  ]}
+                  onPress={() => {
+                    setMinStockFilter("");
+                    setMaxStockFilter("");
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.filterChipLabel,
+                      stockRangeAllActive && styles.filterChipLabelActive,
+                    ]}
+                  >
+                    Todo
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.filterChip,
+                    stockRangeLowActive && styles.filterChipActive,
+                  ]}
+                  onPress={() => {
+                    setMinStockFilter("0");
+                    setMaxStockFilter("5");
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.filterChipLabel,
+                      stockRangeLowActive && styles.filterChipLabelActive,
+                    ]}
+                  >
+                    0-5
+                  </Text>
+                </Pressable>
+                <TextInput
+                  style={[styles.stockInput, styles.stockField]}
+                  placeholder="Mín"
+                  placeholderTextColor="rgba(255,255,255,0.45)"
+                  value={minStockFilter}
+                  onChangeText={(text) =>
+                    setMinStockFilter(text.replace(/[^0-9]/g, ""))
+                  }
+                  keyboardType="number-pad"
+                  returnKeyType="done"
+                  selectionColor="#5668ff"
+                  keyboardAppearance="dark"
+                />
+                <Text style={styles.rangeSeparator}>-</Text>
+                <TextInput
+                  style={[styles.stockInput, styles.stockField]}
+                  placeholder="Máx"
+                  placeholderTextColor="rgba(255,255,255,0.45)"
+                  value={maxStockFilter}
+                  onChangeText={(text) =>
+                    setMaxStockFilter(text.replace(/[^0-9]/g, ""))
+                  }
+                  keyboardType="number-pad"
+                  returnKeyType="done"
+                  selectionColor="#5668ff"
+                  keyboardAppearance="dark"
+                />
+              </View>
+
+              <Text style={styles.filterLabel}>Estado y orden</Text>
+              <View style={styles.filterChipsRow}>
+                <Pressable
+                  style={[
+                    styles.filterChip,
+                    offerFilterActive && styles.filterChipActive,
+                  ]}
+                  onPress={() =>
+                    setOfferFilter((current) =>
+                      current === "offers" ? "all" : "offers"
+                    )
+                  }
+                >
+                  <Text
+                    style={[
+                      styles.filterChipLabel,
+                      offerFilterActive && styles.filterChipLabelActive,
+                    ]}
+                  >
+                    Ofertas
+                  </Text>
+                </Pressable>
+                {[
+                  { key: "name-asc" as const, label: "A-Z" },
+                  { key: "price-desc" as const, label: "Precio ↓" },
+                  { key: "stock-desc" as const, label: "Stock ↓" },
+                ].map((option) => (
+                  <Pressable
+                    key={option.key}
+                    style={[
+                      styles.filterChip,
+                      sortOption === option.key && styles.filterChipActive,
+                    ]}
+                    onPress={() => setSortOption(option.key)}
+                  >
+                    <Text
+                      style={[
+                        styles.filterChipLabel,
+                        sortOption === option.key &&
+                          styles.filterChipLabelActive,
+                      ]}
+                    >
+                      {option.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          )}
         </View>
 
         <View style={styles.metrics}>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Productos</Text>
-            <Text style={styles.metricValue}>{products.length}</Text>
-          </View>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Stock total</Text>
-            <Text style={styles.metricValue}>{stats.totalStock}</Text>
-          </View>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Valor</Text>
-            <Text style={styles.metricValue}>
-              {formatCurrency(stats.value)}
-            </Text>
-          </View>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Ofertas activas</Text>
-            <Text style={styles.metricValue}>{stats.offerCount}</Text>
-          </View>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Bajo stock</Text>
-            <Text
-              style={[
-                styles.metricValue,
-                stats.lowStock > 0 && styles.lowStockValue,
-              ]}
-            >
-              {stats.lowStock}
-            </Text>
-          </View>
+          <Surface style={styles.metricCard}>
+            <Ionicons name="cube-outline" size={24} color="#5668ff" />
+            <View>
+              <Text style={styles.metricValue}>{products.length}</Text>
+              <Text style={styles.metricLabel}>Productos</Text>
+            </View>
+          </Surface>
+          <Surface style={styles.metricCard}>
+            <Ionicons name="albums-outline" size={24} color="#ff6384" />
+            <View>
+              <Text style={styles.metricValue}>{stats.totalStock}</Text>
+              <Text style={styles.metricLabel}>Stock total</Text>
+            </View>
+          </Surface>
+          <Surface style={styles.metricCard}>
+            <Ionicons name="cash-outline" size={24} color="#4cc38a" />
+            <View>
+              <Text style={styles.metricValue}>
+                {formatCurrency(stats.value)}
+              </Text>
+              <Text style={styles.metricLabel}>Valor</Text>
+            </View>
+          </Surface>
+          <Surface style={styles.metricCard}>
+            <Ionicons name="pricetag-outline" size={24} color="#ffa94d" />
+            <View>
+              <Text style={styles.metricValue}>{stats.offerCount}</Text>
+              <Text style={styles.metricLabel}>Ofertas activas</Text>
+            </View>
+          </Surface>
+          <Surface style={styles.metricCard}>
+            <Ionicons
+              name="alert-circle-outline"
+              size={24}
+              color={stats.lowStock > 0 ? "#ff6384" : "#5668ff"}
+            />
+            <View>
+              <Text
+                style={[
+                  styles.metricValue,
+                  stats.lowStock > 0 && styles.lowStockValue,
+                ]}
+              >
+                {stats.lowStock}
+              </Text>
+              <Text style={styles.metricLabel}>Bajo stock</Text>
+            </View>
+          </Surface>
         </View>
 
-        {categorySummaries.length > 0 ? (
+        {false ? (
           <View style={styles.categorySummarySection}>
             <Text style={styles.sectionTitle}>Resumen por categoría</Text>
             <Text style={styles.analyticsSubtitle}>
@@ -1230,210 +1503,6 @@ export default function StoreDetailScreen() {
           </View>
         ) : null}
 
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Inventario</Text>
-          <View style={styles.sectionActions}>
-            <Pressable
-              style={styles.secondaryButton}
-              onPress={() => {
-                setError(null);
-                openCategoryModal("create", null);
-              }}
-            >
-              <Text style={styles.secondaryLabel}>Añadir categoría</Text>
-            </Pressable>
-            <Pressable
-              style={styles.secondaryButton}
-              onPress={() => {
-                setError(null);
-                openProductModal("create", null);
-              }}
-            >
-              <Text style={styles.secondaryLabel}>Añadir producto</Text>
-            </Pressable>
-            <Pressable
-              style={[
-                styles.secondaryButton,
-                exportingReport && styles.disabledButton,
-              ]}
-              onPress={handleExportPdf}
-              disabled={exportingReport}
-            >
-              <Text style={styles.secondaryLabel}>
-                {exportingReport ? "Generando..." : "Exportar PDF"}
-              </Text>
-            </Pressable>
-          </View>
-        </View>
-
-        <View style={styles.searchContainer}>
-          <View style={styles.searchRow}>
-            <TextInput
-              style={[styles.searchInput, styles.searchField]}
-              placeholder="Buscar por nombre, categoría, descripción o código"
-              placeholderTextColor="rgba(255,255,255,0.45)"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              autoCorrect={false}
-              autoCapitalize="none"
-              returnKeyType="search"
-              selectionColor="#5668ff"
-              keyboardAppearance="dark"
-            />
-            <Pressable
-              style={styles.scanSearchButton}
-              onPress={() => setBarcodeScannerVisible(true)}
-            >
-              <Text style={styles.scanSearchLabel}>Escanear</Text>
-            </Pressable>
-          </View>
-
-          <View style={styles.filterBlock}>
-            <View style={styles.filterHeader}>
-              <Text style={styles.filterTitle}>Control de inventario</Text>
-              <Pressable
-                style={[
-                  styles.clearFiltersButton,
-                  !canResetFilters && styles.clearFiltersButtonDisabled,
-                ]}
-                onPress={clearProductFilters}
-                disabled={!canResetFilters}
-              >
-                <Text
-                  style={[
-                    styles.clearFiltersLabel,
-                    !canResetFilters && styles.clearFiltersLabelDisabled,
-                  ]}
-                >
-                  Limpiar filtros
-                </Text>
-              </Pressable>
-            </View>
-
-            <Text style={styles.filterLabel}>Rango de stock</Text>
-            <View style={styles.filterChipsRow}>
-              <Pressable
-                style={[
-                  styles.filterChip,
-                  stockRangeAllActive && styles.filterChipActive,
-                ]}
-                onPress={() => {
-                  setMinStockFilter("");
-                  setMaxStockFilter("");
-                }}
-              >
-                <Text
-                  style={[
-                    styles.filterChipLabel,
-                    stockRangeAllActive && styles.filterChipLabelActive,
-                  ]}
-                >
-                  Todo stock
-                </Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.filterChip,
-                  stockRangeLowActive && styles.filterChipActive,
-                ]}
-                onPress={() => {
-                  setMinStockFilter("0");
-                  setMaxStockFilter("5");
-                }}
-              >
-                <Text
-                  style={[
-                    styles.filterChipLabel,
-                    stockRangeLowActive && styles.filterChipLabelActive,
-                  ]}
-                >
-                  0 - 5
-                </Text>
-              </Pressable>
-            </View>
-            <View style={styles.stockInputsRow}>
-              <TextInput
-                style={[styles.stockInput, styles.stockField]}
-                placeholder="Mín"
-                placeholderTextColor="rgba(255,255,255,0.45)"
-                value={minStockFilter}
-                onChangeText={(text) =>
-                  setMinStockFilter(text.replace(/[^0-9]/g, ""))
-                }
-                keyboardType="number-pad"
-                returnKeyType="done"
-                selectionColor="#5668ff"
-                keyboardAppearance="dark"
-              />
-              <Text style={styles.rangeSeparator}>-</Text>
-              <TextInput
-                style={[styles.stockInput, styles.stockField]}
-                placeholder="Máx"
-                placeholderTextColor="rgba(255,255,255,0.45)"
-                value={maxStockFilter}
-                onChangeText={(text) =>
-                  setMaxStockFilter(text.replace(/[^0-9]/g, ""))
-                }
-                keyboardType="number-pad"
-                returnKeyType="done"
-                selectionColor="#5668ff"
-                keyboardAppearance="dark"
-              />
-            </View>
-
-            <Text style={styles.filterLabel}>Estado</Text>
-            <View style={styles.filterChipsRow}>
-              <Pressable
-                style={[
-                  styles.filterChip,
-                  offerFilterActive && styles.filterChipActive,
-                ]}
-                onPress={() =>
-                  setOfferFilter((current) =>
-                    current === "offers" ? "all" : "offers"
-                  )
-                }
-              >
-                <Text
-                  style={[
-                    styles.filterChipLabel,
-                    offerFilterActive && styles.filterChipLabelActive,
-                  ]}
-                >
-                  Solo ofertas
-                </Text>
-              </Pressable>
-            </View>
-
-            <Text style={styles.filterLabel}>Ordenar por</Text>
-            <View style={styles.sortRow}>
-              {[
-                { key: "name-asc" as const, label: "Nombre A-Z" },
-                { key: "price-desc" as const, label: "Precio (↓)" },
-                { key: "stock-desc" as const, label: "Stock (↓)" },
-              ].map((option) => (
-                <Pressable
-                  key={option.key}
-                  style={[
-                    styles.sortChip,
-                    sortOption === option.key && styles.sortChipActive,
-                  ]}
-                  onPress={() => setSortOption(option.key)}
-                >
-                  <Text
-                    style={[
-                      styles.sortChipLabel,
-                      sortOption === option.key && styles.sortChipLabelActive,
-                    ]}
-                  >
-                    {option.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-        </View>
-
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         {groupedEntries.length === 0 &&
@@ -1463,41 +1532,23 @@ export default function StoreDetailScreen() {
                 </Text>
                 {category ? (
                   <View style={styles.categoryActions}>
-                    {categorySummaryEntry ? (
-                      <Pressable
-                        style={styles.categoryActionButton}
-                        onPress={() => {
-                          setError(null);
-                          openCategorySummary(categorySummaryEntry);
-                        }}
-                      >
-                        <Text style={styles.categoryActionLabel}>Resumen</Text>
-                      </Pressable>
-                    ) : null}
                     <Pressable
-                      style={styles.categoryActionButton}
+                      style={styles.categoryIconButton}
                       onPress={() => {
                         setError(null);
                         openCategoryModal("edit", category);
                       }}
                     >
-                      <Text style={styles.categoryActionLabel}>Editar</Text>
+                      <Ionicons name="create" size={16} color="#9aa4ff" />
                     </Pressable>
                     <Pressable
                       style={[
-                        styles.categoryActionButton,
-                        styles.categoryDangerButton,
+                        styles.categoryIconButton,
+                        styles.categoryDangerIcon,
                       ]}
                       onPress={() => handleDeleteCategory(category)}
                     >
-                      <Text
-                        style={[
-                          styles.categoryActionLabel,
-                          styles.categoryDangerLabel,
-                        ]}
-                      >
-                        Eliminar
-                      </Text>
+                      <Ionicons name="trash" size={16} color="#ff6384" />
                     </Pressable>
                   </View>
                 ) : null}
@@ -1511,12 +1562,17 @@ export default function StoreDetailScreen() {
                       setError(null);
                       openProductDetail(product);
                     }}
-                    onLongPress={() => {
-                      setError(null);
-                      openProductModal("edit", product);
-                    }}
                   >
-                    <ProductCard product={product} category={category} />
+                    <ProductCard
+                      product={product}
+                      category={category}
+                      onOpenQuick={() => openQuickForProduct(product.id)}
+                      onEdit={() => {
+                        setError(null);
+                        openProductModal("edit", product);
+                      }}
+                      onDelete={() => handleDeleteProduct(product)}
+                    />
                   </Pressable>
                 ))}
               </View>
@@ -1543,6 +1599,336 @@ export default function StoreDetailScreen() {
           </View>
         ) : null}
       </ScrollView>
+
+      {/* Quick Actions Modal (global with navigation) */}
+      {currentQuickProduct ? (
+        <Modal
+          visible={quickVisible}
+          animationType="fade"
+          transparent
+          onRequestClose={() => setQuickVisible(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setQuickVisible(false)}>
+            <View style={styles.quickBackdrop}>
+              <TouchableWithoutFeedback onPress={() => {}}>
+                <View style={styles.quickSheet}>
+                  <View style={styles.quickHeader}>
+                    <Text style={styles.quickTitle}>Acción rápida</Text>
+                    <Pressable onPress={() => setQuickVisible(false)}>
+                      <Ionicons name="close" size={20} color="#ffffff" />
+                    </Pressable>
+                  </View>
+                  <View style={styles.quickContent}>
+                    <View style={styles.quickTopRow}>
+                      <Text style={styles.quickProductName} numberOfLines={2}>
+                        {currentQuickProduct.name}
+                      </Text>
+                      <Text style={styles.quickCounter}>
+                        {quickIndex + 1} / {sortedProducts.length}
+                      </Text>
+                    </View>
+
+                    <View style={styles.quickStockRow}>
+                      <Ionicons
+                        name="albums-outline"
+                        size={16}
+                        color="#9aa4ff"
+                      />
+                      <Text style={styles.quickStockLabel}>Stock actual:</Text>
+                      <Text style={styles.quickStockValue}>
+                        {currentQuickProduct.stock}
+                      </Text>
+                    </View>
+
+                    <View style={styles.quickStepperRow}>
+                      <Pressable
+                        style={[styles.quickStepperBtn, styles.quickGhostBtn]}
+                        onPress={() => {
+                          const n = Number(quickQty) || 0;
+                          setQuickQty(String(Math.max(1, Math.abs(n) - 1)));
+                        }}
+                      >
+                        <Ionicons name="remove" size={18} color="#ffffff" />
+                      </Pressable>
+                      <TextInput
+                        value={quickQty}
+                        onChangeText={(t) => {
+                          const only = t.replace(/[^0-9]/g, "");
+                          setQuickQty(only);
+                        }}
+                        keyboardType="number-pad"
+                        style={styles.quickQtyInput}
+                        placeholder="1"
+                        placeholderTextColor="rgba(255,255,255,0.4)"
+                      />
+                      <Pressable
+                        style={[styles.quickStepperBtn, styles.quickGhostBtn]}
+                        onPress={() => {
+                          const n = Number(quickQty) || 0;
+                          setQuickQty(String(Math.min(9999, Math.abs(n) + 1)));
+                        }}
+                      >
+                        <Ionicons name="add" size={18} color="#ffffff" />
+                      </Pressable>
+                    </View>
+
+                    <View style={styles.quickActionsRow}>
+                      <Pressable
+                        style={[
+                          styles.quickPrimaryBtn,
+                          styles.quickPositiveBtn,
+                        ]}
+                        onPress={async () => {
+                          const amount = Math.max(1, Number(quickQty) || 0);
+                          try {
+                            await adjustProductStock(
+                              currentQuickProduct.id,
+                              amount,
+                              {
+                                reason: "manual-adjust",
+                                note: "Ajuste rápido (+)",
+                              }
+                            );
+                          } catch {}
+                        }}
+                      >
+                        <Ionicons name="arrow-up" size={16} color="#0f1320" />
+                        <Text style={styles.quickPrimaryBtnLabel}>Sumar</Text>
+                      </Pressable>
+                      <Pressable
+                        style={[
+                          styles.quickPrimaryBtn,
+                          styles.quickNegativeBtn,
+                        ]}
+                        onPress={async () => {
+                          const amount = Math.max(1, Number(quickQty) || 0);
+                          try {
+                            await adjustProductStock(
+                              currentQuickProduct.id,
+                              -amount,
+                              {
+                                reason: "manual-adjust",
+                                note: "Ajuste rápido (-)",
+                              }
+                            );
+                          } catch {}
+                        }}
+                      >
+                        <Ionicons name="arrow-down" size={16} color="#0f1320" />
+                        <Text style={styles.quickPrimaryBtnLabel}>Restar</Text>
+                      </Pressable>
+                    </View>
+
+                    <View style={styles.quickCodesRow}>
+                      {currentQuickProduct.barcodes?.upc ? (
+                        <Pressable
+                          style={styles.quickSecondaryBtn}
+                          onPress={() =>
+                            setQuickBarcode({
+                              open: true,
+                              code: currentQuickProduct.barcodes?.upc ?? null,
+                              label: "UPC",
+                            })
+                          }
+                        >
+                          <Ionicons
+                            name="barcode-outline"
+                            size={16}
+                            color="#9aa4ff"
+                          />
+                          <Text style={styles.quickSecondaryLabel}>
+                            Ver UPC
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                      {currentQuickProduct.barcodes?.box ? (
+                        <Pressable
+                          style={styles.quickSecondaryBtn}
+                          onPress={() =>
+                            setQuickBarcode({
+                              open: true,
+                              code: currentQuickProduct.barcodes?.box ?? null,
+                              label: "Caja",
+                            })
+                          }
+                        >
+                          <Ionicons
+                            name="qr-code-outline"
+                            size={16}
+                            color="#9aa4ff"
+                          />
+                          <Text style={styles.quickSecondaryLabel}>
+                            Ver Caja
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                      {!currentQuickProduct.barcodes?.upc &&
+                      !currentQuickProduct.barcodes?.box ? (
+                        <View
+                          style={[styles.quickSecondaryBtn, { opacity: 0.6 }]}
+                        >
+                          <Ionicons
+                            name="barcode-outline"
+                            size={16}
+                            color="#9aa4ff"
+                          />
+                          <Text style={styles.quickSecondaryLabel}>
+                            Sin códigos
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    <View style={styles.quickNavRow}>
+                      <Pressable
+                        style={[
+                          styles.quickNavBtn,
+                          quickIndex === 0 && styles.quickNavDisabled,
+                        ]}
+                        disabled={quickIndex === 0}
+                        onPress={() => setQuickIndex((i) => Math.max(0, i - 1))}
+                      >
+                        <Ionicons
+                          name="chevron-back"
+                          size={18}
+                          color="#ffffff"
+                        />
+                        <Text style={styles.quickNavLabel}>Anterior</Text>
+                      </Pressable>
+                      <Pressable
+                        style={[
+                          styles.quickNavBtn,
+                          quickIndex >= sortedProducts.length - 1 &&
+                            styles.quickNavDisabled,
+                        ]}
+                        disabled={quickIndex >= sortedProducts.length - 1}
+                        onPress={() =>
+                          setQuickIndex((i) =>
+                            Math.min(sortedProducts.length - 1, i + 1)
+                          )
+                        }
+                      >
+                        <Text style={styles.quickNavLabel}>Siguiente</Text>
+                        <Ionicons
+                          name="chevron-forward"
+                          size={18}
+                          color="#ffffff"
+                        />
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
+      ) : null}
+
+      <BarcodePreviewModal
+        visible={quickBarcode.open}
+        code={quickBarcode.code}
+        label={quickBarcode.label}
+        onClose={() => setQuickBarcode({ open: false, code: null, label: "" })}
+      />
+
+      {/* Category reorder modal */}
+      <Modal
+        visible={reorderVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setReorderVisible(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setReorderVisible(false)}>
+          <View style={styles.quickBackdrop}>
+            <TouchableWithoutFeedback onPress={() => {}}>
+              <View style={styles.quickSheet}>
+                <View style={styles.quickHeader}>
+                  <Text style={styles.quickTitle}>Ordenar categorías</Text>
+                  <Pressable onPress={() => setReorderVisible(false)}>
+                    <Ionicons name="close" size={20} color="#ffffff" />
+                  </Pressable>
+                </View>
+                <View style={styles.quickContent}>
+                  {(categoryOrder.length
+                    ? [...categories].sort((a, b) => {
+                        const ia = categoryOrder.indexOf(a.id);
+                        const ib = categoryOrder.indexOf(b.id);
+                        return (
+                          (ia === -1 ? Number.MAX_SAFE_INTEGER : ia) -
+                          (ib === -1 ? Number.MAX_SAFE_INTEGER : ib)
+                        );
+                      })
+                    : categories
+                  ).map((cat, idx) => (
+                    <View key={cat.id} style={styles.reorderRow}>
+                      <Text style={styles.reorderLabel} numberOfLines={1}>
+                        {cat.name && cat.name.trim().length
+                          ? cat.name.trim()
+                          : "Sin categoría"}
+                      </Text>
+                      <View style={styles.reorderActions}>
+                        <Pressable
+                          style={[
+                            styles.reorderIconBtn,
+                            idx === 0 && styles.quickNavDisabled,
+                          ]}
+                          disabled={idx === 0}
+                          onPress={() => {
+                            const order = categoryOrder.length
+                              ? categoryOrder
+                              : categories.map((c) => c.id);
+                            const i = order.indexOf(cat.id);
+                            if (i > 0) {
+                              const next = [...order];
+                              const tmp = next[i - 1];
+                              next[i - 1] = next[i];
+                              next[i] = tmp;
+                              persistCategoryOrder(next);
+                            }
+                          }}
+                        >
+                          <Ionicons
+                            name="chevron-up"
+                            size={16}
+                            color="#ffffff"
+                          />
+                        </Pressable>
+                        <Pressable
+                          style={[
+                            styles.reorderIconBtn,
+                            idx === categories.length - 1 &&
+                              styles.quickNavDisabled,
+                          ]}
+                          disabled={idx === categories.length - 1}
+                          onPress={() => {
+                            const order = categoryOrder.length
+                              ? categoryOrder
+                              : categories.map((c) => c.id);
+                            const i = order.indexOf(cat.id);
+                            if (i !== -1 && i < order.length - 1) {
+                              const next = [...order];
+                              const tmp = next[i + 1];
+                              next[i + 1] = next[i];
+                              next[i] = tmp;
+                              persistCategoryOrder(next);
+                            }
+                          }}
+                        >
+                          <Ionicons
+                            name="chevron-down"
+                            size={16}
+                            color="#ffffff"
+                          />
+                        </Pressable>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
 
       <AddProductModal
         visible={productModalState.visible}
@@ -1680,6 +2066,11 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.72)",
     fontSize: 13,
   },
+  pendingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   backButton: {
     position: "absolute",
     top: 20,
@@ -1710,6 +2101,7 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 12,
     padding: 24,
+    justifyContent: "center",
   },
   analyticsSection: {
     paddingHorizontal: 24,
@@ -1788,17 +2180,16 @@ const styles = StyleSheet.create({
   },
   metricCard: {
     flexBasis: "47%",
-    backgroundColor: "#10162b",
-    borderRadius: 20,
-    paddingHorizontal: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 16,
     paddingVertical: 16,
-    gap: 6,
   },
   metricLabel: {
     color: "rgba(255,255,255,0.6)",
-    fontSize: 13,
-    textTransform: "uppercase",
-    letterSpacing: 1,
+    fontSize: 12,
+    fontWeight: "600",
   },
   metricValue: {
     color: "#ffffff",
@@ -1826,13 +2217,41 @@ const styles = StyleSheet.create({
     marginHorizontal: 24,
     marginBottom: 16,
   },
+  filterToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: "rgba(16,22,43,0.6)",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  filterToggleLabel: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
+    flex: 1,
+  },
+  filterBadge: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#5668ff",
+  },
+  filterBadgeText: {
+    fontSize: 8,
+    color: "#5668ff",
+  },
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+    marginBottom: 12,
   },
   filterBlock: {
-    marginTop: 16,
+    marginTop: 12,
     backgroundColor: "rgba(16,22,43,0.8)",
     borderRadius: 16,
     paddingHorizontal: 16,
@@ -1846,11 +2265,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
-  },
-  filterTitle: {
-    color: "#ffffff",
-    fontSize: 16,
-    fontWeight: "700",
+    marginBottom: 6,
   },
   clearFiltersButton: {
     paddingHorizontal: 12,
@@ -1871,18 +2286,20 @@ const styles = StyleSheet.create({
   },
   filterLabel: {
     color: "rgba(255,255,255,0.7)",
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "600",
+    marginBottom: 6,
   },
   filterChipsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: 8,
+    alignItems: "center",
   },
   filterChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
     backgroundColor: "rgba(255,255,255,0.08)",
   },
   filterChipActive: {
@@ -1897,23 +2314,20 @@ const styles = StyleSheet.create({
   filterChipLabelActive: {
     color: "#ffffff",
   },
-  stockInputsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
   stockInput: {
-    flex: 1,
     backgroundColor: "rgba(255,255,255,0.08)",
     color: "#ffffff",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
+    fontSize: 13,
+    fontWeight: "600",
+    textAlign: "center",
   },
   stockField: {
-    maxWidth: 90,
+    width: 50,
   },
   rangeSeparator: {
     color: "rgba(255,255,255,0.6)",
@@ -1941,6 +2355,204 @@ const styles = StyleSheet.create({
   },
   sortChipLabelActive: {
     color: "#ffffff",
+  },
+  // Quick modal styles
+  quickBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.75)",
+    justifyContent: "center",
+    padding: 24,
+  },
+  quickSheet: {
+    backgroundColor: "#0f1320",
+    borderRadius: 20,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+  },
+  quickHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.08)",
+  },
+  quickTitle: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  quickContent: {
+    padding: 16,
+    gap: 12,
+  },
+  quickTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  quickProductName: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "700",
+    flex: 1,
+    paddingRight: 8,
+  },
+  quickCounter: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  quickStockRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  quickStockLabel: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 13,
+  },
+  quickStockValue: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  quickStepperRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  quickStepperBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  quickGhostBtn: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  quickQtyInput: {
+    width: 80,
+    height: 40,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    color: "#ffffff",
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+    textAlign: "center",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  quickActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    justifyContent: "space-between",
+  },
+  quickPrimaryBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: 44,
+    borderRadius: 12,
+  },
+  quickPrimaryBtnLabel: {
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  quickPositiveBtn: {
+    backgroundColor: "#4cc38a",
+  },
+  quickNegativeBtn: {
+    backgroundColor: "#ff6384",
+  },
+  quickCodesRow: {
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "space-between",
+  },
+  quickSecondaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+    flex: 1,
+  },
+  quickSecondaryLabel: {
+    color: "#9aa4ff",
+    fontWeight: "700",
+  },
+  quickNavRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  quickNavBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  quickNavDisabled: {
+    opacity: 0.5,
+  },
+  quickNavLabel: {
+    color: "#ffffff",
+    fontWeight: "700",
+  },
+  reorderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    paddingVertical: 8,
+  },
+  reorderLabel: {
+    color: "#ffffff",
+    fontWeight: "600",
+    fontSize: 14,
+    flex: 1,
+  },
+  reorderMeta: {
+    color: "rgba(255,255,255,0.6)",
+    fontSize: 12,
+    marginTop: 2,
+  },
+  reorderActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  reorderIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
   },
   searchInput: {
     backgroundColor: "rgba(255,255,255,0.08)",
@@ -2030,30 +2642,28 @@ const styles = StyleSheet.create({
   categoryActions: {
     flexDirection: "row",
     gap: 8,
-    flexWrap: "wrap",
   },
-  categoryActionButton: {
-    backgroundColor: "rgba(255,255,255,0.08)",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
+  categoryIconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 9,
+    backgroundColor: "rgba(154,164,255,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(154,164,255,0.25)",
   },
-  categoryActionLabel: {
-    color: "#ffffff",
-    fontWeight: "600",
-  },
-  categoryDangerButton: {
-    backgroundColor: "rgba(255,99,132,0.16)",
-  },
-  categoryDangerLabel: {
-    color: "#ff99b2",
+  categoryDangerIcon: {
+    backgroundColor: "rgba(255,99,132,0.12)",
+    borderColor: "rgba(255,99,132,0.25)",
   },
   categoryList: {
-    gap: 16,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
   },
   productRow: {
-    borderRadius: 20,
-    overflow: "hidden",
+    width: "48%",
   },
   emptyState: {
     backgroundColor: "#10162b",

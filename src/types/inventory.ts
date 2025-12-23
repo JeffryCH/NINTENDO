@@ -68,6 +68,7 @@ export interface Product {
   unit: ProductUnit;
   templateId?: UUID;
   price: number;
+  onlinePrice?: number;
   previousPrice?: number;
   priceUpdatedAt: string;
   priceHistory: ProductPriceSnapshot[];

@@ -9,7 +9,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  FlatList,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import {
   Category,
   MediaAsset,
@@ -19,12 +21,12 @@ import {
 } from "@/types/inventory";
 import { MediaPickerField } from "@/components/MediaPickerField";
 import { BarcodeScannerModal } from "@/components/BarcodeScannerModal";
-import { CategoryModal } from "@/components/CategoryModal";
 import { ProductTemplatePickerModal } from "@/components/ProductTemplatePickerModal";
 
 export interface ProductFormData {
   name: string;
   price: number;
+  onlinePrice?: number;
   stock: number;
   categoryName: string;
   imageUrl?: string;
@@ -72,6 +74,7 @@ export const AddProductModal = ({
   const [name, setName] = useState("");
   const [categoryName, setCategoryName] = useState("");
   const [price, setPrice] = useState("0");
+  const [onlinePrice, setOnlinePrice] = useState("0");
   const [stock, setStock] = useState("0");
   const [imageUrl, setImageUrl] = useState("");
   const [description, setDescription] = useState("");
@@ -92,7 +95,9 @@ export const AddProductModal = ({
   const [scannerTarget, setScannerTarget] = useState<"upc" | "box" | null>(
     null
   );
-  const [createCategoryVisible, setCreateCategoryVisible] = useState(false);
+  const [categoryDropdownVisible, setCategoryDropdownVisible] = useState(false);
+  const [isCreatingCategory, setIsCreatingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
   const [templatePickerVisible, setTemplatePickerVisible] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState<
     string | undefined
@@ -105,6 +110,7 @@ export const AddProductModal = ({
       setName(initialValues.name);
       setCategoryName(initialValues.categoryName);
       setPrice(String(initialValues.price));
+      setOnlinePrice(String(initialValues.onlinePrice ?? 0));
       setStock(String(initialValues.stock));
       setImageUrl(initialValues.imageUrl ?? "");
       setImageAsset(initialValues.imageAsset);
@@ -131,6 +137,7 @@ export const AddProductModal = ({
       setName("");
       setCategoryName("");
       setPrice("0");
+      setOnlinePrice("0");
       setStock("0");
       setImageUrl("");
       setImageAsset(undefined);
@@ -164,6 +171,29 @@ export const AddProductModal = ({
 
   const handleSelectCategory = (value: string) => {
     setCategoryName(value);
+    setCategoryDropdownVisible(false);
+    setIsCreatingCategory(false);
+  };
+
+  const handleCreateCategory = async () => {
+    const trimmed = newCategoryName.trim();
+    if (!trimmed) {
+      setError("Nombre de categoría requerido.");
+      return;
+    }
+
+    try {
+      const category = await onCreateCategory({ name: trimmed });
+      setCategoryName(category.name);
+      setNewCategoryName("");
+      setIsCreatingCategory(false);
+      setCategoryDropdownVisible(false);
+      setError(null);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "No se pudo crear la categoría."
+      );
+    }
   };
 
   const openScanner = (target: "upc" | "box") => {
@@ -183,23 +213,6 @@ export const AddProductModal = ({
     } else {
       setBarcodeBox(value);
     }
-  };
-
-  const openCreateCategoryModal = () => {
-    setCreateCategoryVisible(true);
-  };
-
-  const closeCreateCategoryModal = () => {
-    setCreateCategoryVisible(false);
-  };
-
-  const handleSubmitCategoryCreation = async (data: {
-    name: string;
-    description?: string;
-  }) => {
-    const category = await onCreateCategory(data);
-    setCategoryName(category.name);
-    setError(null);
   };
 
   const openTemplatePicker = () => {
@@ -240,8 +253,7 @@ export const AddProductModal = ({
     () =>
       categories
         .map((category) => category.name)
-        .filter((nameOption, index, arr) => arr.indexOf(nameOption) === index)
-        .slice(0, 3),
+        .filter((nameOption, index, arr) => arr.indexOf(nameOption) === index),
     [categories]
   );
 
@@ -283,6 +295,7 @@ export const AddProductModal = ({
     const trimmedName = name.trim();
     const trimmedCategory = categoryName.trim();
     const numericPrice = numberFrom(price);
+    const numericOnlinePrice = numberFrom(onlinePrice);
     const numericStock = Math.max(0, Math.floor(numberFrom(stock)));
     const numericOffer = numberFrom(offerPrice);
 
@@ -309,6 +322,7 @@ export const AddProductModal = ({
         name: trimmedName,
         categoryName: trimmedCategory,
         price: numericPrice,
+        onlinePrice: numericOnlinePrice > 0 ? numericOnlinePrice : undefined,
         stock: numericStock,
         imageUrl: imageUrl.trim() || undefined,
         imageAsset,
@@ -342,216 +356,362 @@ export const AddProductModal = ({
       >
         <View style={styles.sheet}>
           <View style={styles.header}>
-            <Text style={styles.title}>
-              {isEdit ? "Editar producto" : "Nuevo producto"}
-            </Text>
-            <Pressable onPress={handleClose}>
-              <Text style={styles.closeLabel}>Cerrar</Text>
+            <View style={styles.titleRow}>
+              <Ionicons
+                name={isEdit ? "create" : "add-circle"}
+                size={20}
+                color="#ffffff"
+              />
+              <Text style={styles.title}>
+                {isEdit ? "Editar producto" : "Nuevo producto"}
+              </Text>
+            </View>
+            <Pressable onPress={handleClose} style={styles.closeButton}>
+              <Ionicons name="close" size={18} color="rgba(255,255,255,0.7)" />
             </Pressable>
           </View>
 
           <ScrollView contentContainerStyle={styles.form}>
-            <Text style={styles.label}>Nombre *</Text>
-            <TextInput
-              value={name}
-              onChangeText={setName}
-              placeholder="Nintendo Switch Lite"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-              style={styles.input}
-            />
+            {/* SECCIÓN BÁSICA */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Información básica</Text>
 
-            <Text style={styles.label}>Categoría *</Text>
-            <TextInput
-              value={categoryName}
-              onChangeText={handleSelectCategory}
-              placeholder="Consolas"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-              style={styles.input}
-            />
-            <View style={styles.suggestionRow}>
-              {suggestedCategories.map((option) => (
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>Nombre del producto *</Text>
+                <TextInput
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="Nintendo Switch Lite"
+                  placeholderTextColor="rgba(255,255,255,0.4)"
+                  style={styles.input}
+                />
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>Precio online</Text>
+                <TextInput
+                  value={onlinePrice}
+                  onChangeText={setOnlinePrice}
+                  keyboardType="decimal-pad"
+                  placeholder="8299.00"
+                  placeholderTextColor="rgba(255,255,255,0.4)"
+                  style={styles.input}
+                />
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>Categoría *</Text>
                 <Pressable
-                  key={option}
-                  onPress={() => handleSelectCategory(option)}
-                  style={styles.suggestionPill}
+                  style={styles.categorySelector}
+                  onPress={() =>
+                    setCategoryDropdownVisible(!categoryDropdownVisible)
+                  }
                 >
-                  <Text style={styles.suggestionLabel}>{option}</Text>
+                  <Text
+                    style={[
+                      styles.categorySelectorText,
+                      !categoryName && styles.categorySelectorPlaceholder,
+                    ]}
+                  >
+                    {categoryName || "Selecciona una categoría"}
+                  </Text>
+                  <Ionicons
+                    name={
+                      categoryDropdownVisible ? "chevron-up" : "chevron-down"
+                    }
+                    size={18}
+                    color="#9aa4ff"
+                  />
                 </Pressable>
-              ))}
-            </View>
-            <View style={styles.categoryHelpers}>
-              <Pressable
-                onPress={openCreateCategoryModal}
-                style={styles.createCategoryButton}
-              >
-                <Text style={styles.createCategoryLabel}>
-                  Crear nueva categoría
-                </Text>
-              </Pressable>
+
+                {categoryDropdownVisible && (
+                  <View style={styles.categoryDropdown}>
+                    {isCreatingCategory ? (
+                      <View style={styles.createCategoryForm}>
+                        <TextInput
+                          value={newCategoryName}
+                          onChangeText={setNewCategoryName}
+                          placeholder="Nombre de la nueva categoría"
+                          placeholderTextColor="rgba(255,255,255,0.4)"
+                          style={styles.input}
+                          autoFocus
+                        />
+                        <View style={styles.categoryActions}>
+                          <Pressable
+                            style={[styles.categoryButton, styles.cancelButton]}
+                            onPress={() => {
+                              setIsCreatingCategory(false);
+                              setNewCategoryName("");
+                            }}
+                          >
+                            <Text style={styles.categoryButtonLabel}>
+                              Cancelar
+                            </Text>
+                          </Pressable>
+                          <Pressable
+                            style={[
+                              styles.categoryButton,
+                              styles.confirmButton,
+                            ]}
+                            onPress={handleCreateCategory}
+                          >
+                            <Text
+                              style={[
+                                styles.categoryButtonLabel,
+                                styles.confirmButtonLabel,
+                              ]}
+                            >
+                              Crear
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    ) : (
+                      <>
+                        {suggestedCategories.map((category) => (
+                          <Pressable
+                            key={category}
+                            style={[
+                              styles.categoryOption,
+                              categoryName === category &&
+                                styles.categoryOptionSelected,
+                            ]}
+                            onPress={() => handleSelectCategory(category)}
+                          >
+                            <Text
+                              style={[
+                                styles.categoryOptionLabel,
+                                categoryName === category &&
+                                  styles.categoryOptionLabelSelected,
+                              ]}
+                            >
+                              {category}
+                            </Text>
+                          </Pressable>
+                        ))}
+                        <Pressable
+                          style={styles.createCategoryOption}
+                          onPress={() => setIsCreatingCategory(true)}
+                        >
+                          <Ionicons
+                            name="add-circle"
+                            size={16}
+                            color="#5668ff"
+                          />
+                          <Text style={styles.createCategoryOptionLabel}>
+                            Crear categoría
+                          </Text>
+                        </Pressable>
+                      </>
+                    )}
+                  </View>
+                )}
+              </View>
+
               {templates.length > 0 ? (
                 <Pressable
                   onPress={openTemplatePicker}
-                  style={styles.templateButton}
+                  style={styles.templateLinkButton}
                 >
-                  <Text style={styles.templateLabel}>
-                    Buscar plantilla de producto
-                  </Text>
+                  <Ionicons name="document-text" size={14} color="#9aa4ff" />
+                  <Text style={styles.templateLinkLabel}>Usar plantilla</Text>
                 </Pressable>
               ) : null}
             </View>
 
-            <Text style={styles.label}>Precio *</Text>
-            <TextInput
-              value={price}
-              onChangeText={setPrice}
-              keyboardType="numeric"
-              placeholder="0"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-              style={styles.input}
-            />
+            {/* SECCIÓN PRECIO E INVENTARIO */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Precio e inventario</Text>
 
-            <Text style={styles.label}>Stock *</Text>
-            <TextInput
-              value={stock}
-              onChangeText={setStock}
-              keyboardType="numeric"
-              placeholder="0"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-              style={styles.input}
-            />
+              <View style={styles.rowGroup}>
+                <View style={[styles.fieldGroup, styles.flex]}>
+                  <Text style={styles.label}>Precio *</Text>
+                  <TextInput
+                    value={price}
+                    onChangeText={setPrice}
+                    keyboardType="numeric"
+                    placeholder="0"
+                    placeholderTextColor="rgba(255,255,255,0.4)"
+                    style={styles.input}
+                  />
+                </View>
+                <View style={[styles.fieldGroup, styles.flex]}>
+                  <Text style={styles.label}>Stock *</Text>
+                  <TextInput
+                    value={stock}
+                    onChangeText={setStock}
+                    keyboardType="numeric"
+                    placeholder="0"
+                    placeholderTextColor="rgba(255,255,255,0.4)"
+                    style={styles.input}
+                  />
+                </View>
+              </View>
 
-            <MediaPickerField
-              label="Imagen del producto"
-              asset={imageAsset}
-              imageUrl={imageUrl}
-              onAssetChange={setImageAsset}
-              onImageUrlChange={(value) => setImageUrl(value ?? "")}
-            />
+              <View style={styles.fieldGroup}>
+                <View style={styles.toggleRow}>
+                  <Pressable
+                    style={[styles.toggle, hasOffer && styles.toggleActive]}
+                    onPress={() => setHasOffer((v) => !v)}
+                  >
+                    {hasOffer && <Text style={styles.toggleDot}>●</Text>}
+                  </Pressable>
+                  <Text style={styles.toggleLabel}>¿Tiene oferta activa?</Text>
+                </View>
+              </View>
 
-            <Text style={styles.label}>Descripción</Text>
-            <TextInput
-              value={description}
-              onChangeText={setDescription}
-              placeholder="Notas adicionales"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-              style={[styles.input, styles.multiline]}
-              multiline
-            />
-
-            <View style={styles.switchRow}>
-              <Pressable
-                style={[styles.checkbox, hasOffer && styles.checkboxChecked]}
-                onPress={() => setHasOffer((value: boolean) => !value)}
-              >
-                {hasOffer ? <Text style={styles.checkboxMark}>✓</Text> : null}
-              </Pressable>
-              <Text style={styles.switchLabel}>¿Tiene oferta activa?</Text>
+              {hasOffer ? (
+                <View style={styles.fieldGroup}>
+                  <Text style={styles.label}>Precio en oferta</Text>
+                  <TextInput
+                    value={offerPrice}
+                    onChangeText={setOfferPrice}
+                    keyboardType="numeric"
+                    placeholder="0"
+                    placeholderTextColor="rgba(255,255,255,0.4)"
+                    style={styles.input}
+                  />
+                </View>
+              ) : null}
             </View>
 
-            {hasOffer ? (
-              <>
-                <Text style={styles.label}>Precio en oferta</Text>
+            {/* SECCIÓN CÓDIGOS DE BARRAS */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Códigos de barras</Text>
+
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>Código UPC</Text>
+                <View style={styles.barcodeInputRow}>
+                  <TextInput
+                    value={barcodeUPC}
+                    onChangeText={setBarcodeUPC}
+                    placeholder="Código UPC"
+                    placeholderTextColor="rgba(255,255,255,0.4)"
+                    style={[styles.input, styles.flex]}
+                    autoCapitalize="characters"
+                  />
+                  <Pressable
+                    style={styles.iconButton}
+                    onPress={() => openScanner("upc")}
+                  >
+                    <Ionicons name="barcode" size={20} color="#5668ff" />
+                  </Pressable>
+                </View>
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>Código de caja</Text>
+                <View style={styles.barcodeInputRow}>
+                  <TextInput
+                    value={barcodeBox}
+                    onChangeText={setBarcodeBox}
+                    placeholder="Código de caja"
+                    placeholderTextColor="rgba(255,255,255,0.4)"
+                    style={[styles.input, styles.flex]}
+                    autoCapitalize="characters"
+                  />
+                  <Pressable
+                    style={styles.iconButton}
+                    onPress={() => openScanner("box")}
+                  >
+                    <Ionicons name="barcode" size={20} color="#5668ff" />
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+
+            {/* SECCIÓN PROMOCIONES */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Opciones de promoción</Text>
+
+              <View style={styles.fieldGroup}>
+                <View style={styles.toggleRow}>
+                  <Pressable
+                    style={[styles.toggle, cashOnly && styles.toggleActive]}
+                    onPress={() => setCashOnly((v) => !v)}
+                  >
+                    {cashOnly && <Text style={styles.toggleDot}>●</Text>}
+                  </Pressable>
+                  <Text style={styles.toggleLabel}>
+                    Solo en pago en efectivo
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>Meses a tasa 0</Text>
                 <TextInput
-                  value={offerPrice}
-                  onChangeText={setOfferPrice}
+                  value={zeroInterestMonths}
+                  onChangeText={setZeroInterestMonths}
                   keyboardType="numeric"
                   placeholder="0"
                   placeholderTextColor="rgba(255,255,255,0.4)"
                   style={styles.input}
                 />
-              </>
-            ) : null}
+              </View>
 
-            <View style={styles.divider} />
+              <View style={styles.fieldGroup}>
+                <View style={styles.toggleRow}>
+                  <Pressable
+                    style={[
+                      styles.toggle,
+                      hasExpiration && styles.toggleActive,
+                    ]}
+                    onPress={() => setHasExpiration((v) => !v)}
+                  >
+                    {hasExpiration && <Text style={styles.toggleDot}>●</Text>}
+                  </Pressable>
+                  <Text style={styles.toggleLabel}>
+                    Tiene fecha de expiración
+                  </Text>
+                </View>
+              </View>
 
-            <Text style={styles.label}>Códigos de barras</Text>
-            <View style={styles.barcodeRow}>
-              <TextInput
-                value={barcodeUPC}
-                onChangeText={setBarcodeUPC}
-                placeholder="Código UPC"
-                placeholderTextColor="rgba(255,255,255,0.4)"
-                style={[styles.input, styles.flex]}
-                autoCapitalize="characters"
+              {hasExpiration ? (
+                <View style={styles.fieldGroup}>
+                  <Text style={styles.label}>Fecha de expiración</Text>
+                  <TextInput
+                    value={expiresAt}
+                    onChangeText={setExpiresAt}
+                    placeholder="YYYY-MM-DD"
+                    placeholderTextColor="rgba(255,255,255,0.4)"
+                    style={styles.input}
+                    autoCapitalize="none"
+                  />
+                </View>
+              ) : null}
+            </View>
+
+            {/* SECCIÓN MEDIA */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Descripción e imagen</Text>
+
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>Descripción</Text>
+                <TextInput
+                  value={description}
+                  onChangeText={setDescription}
+                  placeholder="Notas adicionales sobre el producto"
+                  placeholderTextColor="rgba(255,255,255,0.4)"
+                  style={[styles.input, styles.multiline]}
+                  multiline
+                />
+              </View>
+
+              <MediaPickerField
+                label="Imagen del producto"
+                asset={imageAsset}
+                imageUrl={imageUrl}
+                onAssetChange={setImageAsset}
+                onImageUrlChange={(value) => setImageUrl(value ?? "")}
               />
-              <Pressable
-                style={styles.scanButton}
-                onPress={() => openScanner("upc")}
-              >
-                <Text style={styles.scanLabel}>Escanear</Text>
-              </Pressable>
-            </View>
-            <View style={styles.barcodeRow}>
-              <TextInput
-                value={barcodeBox}
-                onChangeText={setBarcodeBox}
-                placeholder="Código caja"
-                placeholderTextColor="rgba(255,255,255,0.4)"
-                style={[styles.input, styles.flex]}
-                autoCapitalize="characters"
-              />
-              <Pressable
-                style={styles.scanButton}
-                onPress={() => openScanner("box")}
-              >
-                <Text style={styles.scanLabel}>Escanear</Text>
-              </Pressable>
             </View>
 
-            <View style={styles.divider} />
-
-            <Text style={styles.label}>Promociones</Text>
-            <View style={styles.switchRow}>
-              <Pressable
-                style={[styles.checkbox, cashOnly && styles.checkboxChecked]}
-                onPress={() => setCashOnly((value: boolean) => !value)}
-              >
-                {cashOnly ? <Text style={styles.checkboxMark}>✓</Text> : null}
-              </Pressable>
-              <Text style={styles.switchLabel}>
-                Solo aplica pagando en efectivo
-              </Text>
-            </View>
-            <Text style={styles.secondaryLabel}>Meses tasa 0</Text>
-            <TextInput
-              value={zeroInterestMonths}
-              onChangeText={setZeroInterestMonths}
-              keyboardType="numeric"
-              placeholder="0"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-              style={styles.input}
-            />
-            <View style={styles.switchRow}>
-              <Pressable
-                style={[
-                  styles.checkbox,
-                  hasExpiration && styles.checkboxChecked,
-                ]}
-                onPress={() => setHasExpiration((value: boolean) => !value)}
-              >
-                {hasExpiration ? (
-                  <Text style={styles.checkboxMark}>✓</Text>
-                ) : null}
-              </Pressable>
-              <Text style={styles.switchLabel}>
-                La promoción tiene fecha de expiración
-              </Text>
-            </View>
-            {hasExpiration ? (
-              <TextInput
-                value={expiresAt}
-                onChangeText={setExpiresAt}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor="rgba(255,255,255,0.4)"
-                style={styles.input}
-                autoCapitalize="none"
-              />
-            ) : null}
-
+            {/* ERROR Y BOTÓN */}
             {error ? <Text style={styles.error}>{error}</Text> : null}
 
             <Pressable
-              style={[styles.submitButton, submitting && styles.disabled]}
+              style={[styles.submitButton, submitting && styles.submitDisabled]}
               onPress={handleSubmit}
               disabled={submitting}
             >
@@ -579,14 +739,6 @@ export const AddProductModal = ({
             : "Escanea el código de caja"
         }
       />
-      <CategoryModal
-        visible={createCategoryVisible}
-        mode="create"
-        onClose={closeCreateCategoryModal}
-        onSubmit={async (data) => {
-          await handleSubmitCategoryCreation(data);
-        }}
-      />
       <ProductTemplatePickerModal
         visible={templatePickerVisible}
         templates={templates}
@@ -608,166 +760,261 @@ const styles = StyleSheet.create({
     backgroundColor: "#0f1320",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    paddingHorizontal: 24,
-    paddingTop: 16,
+    paddingHorizontal: 20,
+    paddingTop: 20,
     paddingBottom: 24,
   },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 12,
+    marginBottom: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.08)",
+  },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
   },
   title: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "700",
     color: "#ffffff",
+    flex: 1,
   },
-  closeLabel: {
-    color: "rgba(255,255,255,0.6)",
-  },
-  form: {
-    gap: 12,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "rgba(255,255,255,0.7)",
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  input: {
-    backgroundColor: "#171b2c",
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: "#ffffff",
-    fontSize: 15,
-  },
-  multiline: {
-    minHeight: 72,
-    textAlignVertical: "top",
-  },
-  suggestionRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  suggestionPill: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 14,
-    backgroundColor: "rgba(154,164,255,0.15)",
-  },
-  suggestionLabel: {
-    color: "#9aa4ff",
-    fontWeight: "600",
-  },
-  categoryHelpers: {
-    marginTop: 6,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  createCategoryButton: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: "rgba(154,164,255,0.12)",
+  closeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 9,
+    backgroundColor: "rgba(255,255,255,0.08)",
     borderWidth: 1,
-    borderColor: "rgba(154,164,255,0.28)",
-  },
-  createCategoryLabel: {
-    color: "#9aa4ff",
-    fontWeight: "600",
-  },
-  templateButton: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: "rgba(76,195,138,0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(76,195,138,0.3)",
-  },
-  templateLabel: {
-    color: "#4cc38a",
-    fontWeight: "600",
-  },
-  switchRow: {
-    flexDirection: "row",
-    gap: 10,
-    alignItems: "center",
-    marginTop: 8,
-  },
-  checkbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.3)",
+    borderColor: "rgba(255,255,255,0.12)",
     alignItems: "center",
     justifyContent: "center",
   },
-  checkboxChecked: {
+  form: {
+    gap: 16,
+    paddingBottom: 24,
+  },
+  section: {
+    gap: 12,
+  },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#ffffff",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  fieldGroup: {
+    gap: 6,
+  },
+  rowGroup: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  flex: {
+    flex: 1,
+  },
+  label: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.7)",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  input: {
+    backgroundColor: "#171b2c",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    color: "#ffffff",
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  multiline: {
+    minHeight: 80,
+    textAlignVertical: "top",
+  },
+  buttonRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 4,
+  },
+  templateLinkButton: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 8,
+  },
+  templateLinkLabel: {
+    color: "#9aa4ff",
+    fontWeight: "600",
+    fontSize: 12,
+  },
+  toggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 4,
+  },
+  toggle: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  toggleActive: {
     backgroundColor: "#5668ff",
     borderColor: "#5668ff",
   },
-  checkboxMark: {
+  toggleDot: {
     color: "#ffffff",
+    fontSize: 16,
     fontWeight: "700",
   },
-  switchLabel: {
-    color: "rgba(255,255,255,0.8)",
-    fontSize: 15,
+  toggleLabel: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "500",
+    flex: 1,
   },
-  secondaryLabel: {
-    color: "rgba(255,255,255,0.6)",
-    fontSize: 13,
-    marginTop: 12,
-    marginBottom: -4,
+  categorySelector: {
+    backgroundColor: "#171b2c",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  categorySelectorText: {
+    color: "#ffffff",
+    fontSize: 14,
+    flex: 1,
+  },
+  categorySelectorPlaceholder: {
+    color: "rgba(255,255,255,0.4)",
+  },
+  categoryDropdown: {
+    marginTop: 6,
+    backgroundColor: "#171b2c",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(86,104,255,0.25)",
+    overflow: "hidden",
+  },
+  categoryOption: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.08)",
+  },
+  categoryOptionSelected: {
+    backgroundColor: "rgba(86,104,255,0.12)",
+  },
+  categoryOptionLabel: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 14,
+    fontWeight: "500",
+  },
+  categoryOptionLabelSelected: {
+    color: "#9aa4ff",
+    fontWeight: "600",
+  },
+  createCategoryOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: "rgba(86,104,255,0.08)",
+    borderTopWidth: 1,
+    borderTopColor: "rgba(86,104,255,0.25)",
+  },
+  createCategoryOptionLabel: {
+    color: "#5668ff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  createCategoryForm: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  categoryActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  categoryButton: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: "center",
+    borderWidth: 1,
+  },
+  cancelButton: {
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderColor: "rgba(255,255,255,0.15)",
+  },
+  confirmButton: {
+    backgroundColor: "#5668ff",
+    borderColor: "#5668ff",
+  },
+  categoryButtonLabel: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  confirmButtonLabel: {
+    color: "#ffffff",
+  },
+  barcodeInputRow: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+  },
+  iconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: "rgba(86,104,255,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(86,104,255,0.25)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   error: {
     color: "#ff6384",
     fontSize: 13,
+    fontWeight: "600",
+    marginTop: 4,
   },
   submitButton: {
-    marginTop: 16,
-    backgroundColor: "#4cc38a",
-    borderRadius: 16,
+    marginTop: 8,
+    backgroundColor: "#5668ff",
+    borderRadius: 14,
     paddingVertical: 14,
     alignItems: "center",
   },
-  submitLabel: {
-    color: "#0f1320",
-    fontWeight: "700",
-    fontSize: 16,
-  },
-  disabled: {
+  submitDisabled: {
     opacity: 0.6,
   },
-  divider: {
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    marginTop: 12,
-  },
-  barcodeRow: {
-    flexDirection: "row",
-    gap: 10,
-    alignItems: "center",
-  },
-  scanButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: "rgba(86,104,255,0.16)",
-  },
-  scanLabel: {
-    color: "#b4bcff",
-    fontWeight: "600",
-  },
-  flex: {
-    flex: 1,
+  submitLabel: {
+    color: "#ffffff",
+    fontWeight: "700",
+    fontSize: 15,
   },
 });

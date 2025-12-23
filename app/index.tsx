@@ -9,6 +9,10 @@ import {
   Pressable,
   TextInput,
 } from "react-native";
+import { Button, Chip, Surface } from "heroui-native";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { useEffect } from "react";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { printToFileAsync } from "expo-print";
 import { isAvailableAsync, shareAsync } from "expo-sharing";
 import { StoreCard } from "@/components/StoreCard";
@@ -18,6 +22,8 @@ import { formatCurrency } from "@/utils/formatCurrency";
 import type { MediaAsset, Store } from "@/types/inventory";
 
 export default function HomeScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams<{ action?: string }>();
   const stores = useInventoryStore((state) => state.stores);
   const products = useInventoryStore((state) => state.products);
   const addStore = useInventoryStore((state) => state.addStore);
@@ -36,11 +42,17 @@ export default function HomeScreen() {
   const [storeSortOption, setStoreSortOption] = useState<
     "name-asc" | "value-desc" | "products-desc"
   >("name-asc");
+  const [quickActionsOpen, setQuickActionsOpen] = useState(false);
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
   const metricsByStore = useMemo(() => {
     const storeMetrics = new Map<
       string,
-      { productCount: number; stockValue: number; lowStock: number }
+      {
+        productCount: number;
+        stockValue: number;
+        lowStock: number;
+      }
     >();
 
     stores.forEach((store) => {
@@ -68,7 +80,6 @@ export default function HomeScreen() {
 
     return storeMetrics;
   }, [stores, products]);
-
   const globalMetrics = useMemo(() => {
     const totalProducts = products.length;
     const totalStock = products.reduce(
@@ -315,144 +326,266 @@ export default function HomeScreen() {
     }
   };
 
+  const handleGenerateStoreReport = async (store: Store) => {
+    try {
+      const timestamp = new Date().toLocaleString();
+      const storeProducts = products.filter((p) => p.storeId === store.id);
+      const productCount = storeProducts.length;
+      const stockValue = storeProducts.reduce(
+        (acc, p) =>
+          acc + p.stock * (p.hasOffer && p.offerPrice ? p.offerPrice : p.price),
+        0
+      );
+      const lowStock = storeProducts.filter((p) => p.stock <= 3).length;
+
+      const html = `<!DOCTYPE html>
+        <html lang="es">
+          <head>
+            <meta charset="utf-8" />
+            <style>
+              body { font-family: 'Roboto', sans-serif; padding: 24px; color: #1b1d2a; }
+              h1 { font-size: 24px; margin-bottom: 4px; }
+              p { margin: 0 0 16px 0; color: #4b4e65; }
+              table { width: 100%; border-collapse: collapse; }
+              th, td { border: 1px solid #d9dbe8; padding: 12px; text-align: left; font-size: 13px; }
+              th { background-color: #eef1ff; font-weight: 700; }
+              tbody tr:nth-child(even) { background-color: #f7f8ff; }
+            </style>
+          </head>
+          <body>
+            <h1>Reporte de tienda: ${store.name}</h1>
+            <p>Generado el ${timestamp}</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Ubicación</th>
+                  <th>Productos</th>
+                  <th>Valor inventario</th>
+                  <th>Bajo stock</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>${store.location ?? "-"}</td>
+                  <td>${productCount}</td>
+                  <td>${formatCurrency(stockValue)}</td>
+                  <td>${lowStock}</td>
+                </tr>
+              </tbody>
+            </table>
+          </body>
+        </html>`;
+
+      const file = await printToFileAsync({ html, base64: false });
+      const canShare = await isAvailableAsync();
+      if (canShare) {
+        await shareAsync(file.uri, {
+          mimeType: "application/pdf",
+          dialogTitle: `Compartir reporte de ${store.name}`,
+          UTI: "com.adobe.pdf",
+        });
+      } else {
+        Alert.alert("Reporte de tienda", `Reporte generado en: ${file.uri}`);
+      }
+    } catch (error) {
+      Alert.alert(
+        "Reporte de tienda",
+        "No se pudo generar el reporte. Intenta nuevamente."
+      );
+    }
+  };
+
   const clearStoreFilters = () => {
     setStoreSearchQuery("");
     setOnlyAlertStores(false);
     setStoreSortOption("name-asc");
   };
 
+  const handleToggleQuickActions = () => {
+    setQuickActionsOpen((current) => !current);
+  };
+
+  const handleQuickReport = async () => {
+    setQuickActionsOpen(false);
+    await handleGenerateReport();
+  };
+
+  const handleQuickCreate = () => {
+    setQuickActionsOpen(false);
+    handleOpenCreateModal();
+  };
+
+  useEffect(() => {
+    if (params.action === "create-store") {
+      handleOpenCreateModal();
+      // limpia el parámetro para evitar reabrir en back
+      router.setParams({});
+    }
+  }, [params, router]);
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.header}>
-          <View style={styles.headerContent}>
+          <View style={styles.headerTopRow}>
             <Text style={styles.heading}>Inventario Nintendo</Text>
-            <Text style={styles.subheading}>
-              Gestiona tiendas, stock y ofertas en tiempo real.
-            </Text>
-          </View>
-          <View style={styles.headerActions}>
             <Pressable
-              style={[
-                styles.secondaryButton,
-                (reportPending || stores.length === 0) && styles.disabled,
-              ]}
-              onPress={handleGenerateReport}
-              disabled={reportPending || stores.length === 0}
+              style={styles.iconButton}
+              onPress={handleToggleQuickActions}
+              accessibilityLabel="Abrir menú de acciones"
             >
-              <Text style={styles.secondaryButtonLabel}>
-                {reportPending ? "Generando..." : "Generar reporte"}
+              <Ionicons
+                name={quickActionsOpen ? "close" : "ellipsis-horizontal"}
+                size={20}
+                color="#d8dcff"
+              />
+            </Pressable>
+          </View>
+
+          {quickActionsOpen ? (
+            <Surface style={styles.quickActionsSheet}>
+              <Pressable
+                style={styles.quickAction}
+                onPress={handleQuickReport}
+                disabled={reportPending || stores.length === 0}
+              >
+                <Ionicons
+                  name="document-text-outline"
+                  size={18}
+                  color="rgba(216,220,255,0.92)"
+                />
+                <Text style={styles.quickActionLabel}>
+                  {reportPending ? "Generando..." : "Generar reporte"}
+                </Text>
+              </Pressable>
+              <Pressable style={styles.quickAction} onPress={handleQuickCreate}>
+                <Ionicons
+                  name="add-circle-outline"
+                  size={18}
+                  color="rgba(216,220,255,0.92)"
+                />
+                <Text style={styles.quickActionLabel}>Añadir tienda</Text>
+              </Pressable>
+            </Surface>
+          ) : null}
+
+          {/* Botones del header eliminados: ahora vive en menú y FAB global */}
+        </View>
+
+        <Surface style={styles.storeControls}>
+          <View style={styles.filterHeader}>
+            <Pressable
+              style={styles.filterTitleRow}
+              onPress={() => setShowAdvancedFilters((c) => !c)}
+            >
+              <Ionicons
+                name={showAdvancedFilters ? "filter" : "options-outline"}
+                size={16}
+                color="#8fa2ff"
+              />
+              <Text style={styles.filterTitle}>
+                {showAdvancedFilters ? "Filtros rápidos" : "Opciones"}
               </Text>
             </Pressable>
             <Pressable
-              style={[styles.primaryButton, styles.headerButton]}
-              onPress={handleOpenCreateModal}
-            >
-              <Text style={styles.primaryButtonLabel}>Añadir tienda</Text>
-            </Pressable>
-          </View>
-        </View>
-
-        <View style={styles.metricsRow}>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Tiendas</Text>
-            <Text style={styles.metricValue}>{stores.length}</Text>
-          </View>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Productos</Text>
-            <Text style={styles.metricValue}>
-              {globalMetrics.totalProducts}
-            </Text>
-          </View>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Stock total</Text>
-            <Text style={styles.metricValue}>{globalMetrics.totalStock}</Text>
-          </View>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Valor inventario</Text>
-            <Text style={styles.metricValueSmall}>
-              {formatCurrency(globalMetrics.inventoryValue)}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.storeControls}>
-          <View style={styles.storeSearchRow}>
-            <TextInput
-              style={[styles.storeSearchInput, styles.storeSearchField]}
-              placeholder="Buscar tienda por nombre o ubicación"
-              placeholderTextColor="rgba(255,255,255,0.45)"
-              value={storeSearchQuery}
-              onChangeText={setStoreSearchQuery}
-              autoCorrect={false}
-              autoCapitalize="words"
-              returnKeyType="search"
-              selectionColor="#5668ff"
-              keyboardAppearance="dark"
-            />
-            <Pressable
-              style={[
-                styles.storeClearButton,
-                !canResetStoreFilters && styles.storeClearButtonDisabled,
-              ]}
               onPress={clearStoreFilters}
               disabled={!canResetStoreFilters}
+              style={({ pressed }) => [
+                styles.filterClear,
+                pressed && styles.filterClearPressed,
+                !canResetStoreFilters && styles.filterClearDisabled,
+              ]}
+              accessibilityLabel="Limpiar filtros"
             >
               <Text
-                style={[
-                  styles.storeClearLabel,
-                  !canResetStoreFilters && styles.storeClearLabelDisabled,
-                ]}
+                style={
+                  !canResetStoreFilters
+                    ? styles.filterClearTextDisabled
+                    : styles.filterClearText
+                }
               >
                 Limpiar
               </Text>
             </Pressable>
           </View>
 
-          <View style={styles.storeFilterRow}>
-            <Pressable
-              style={[
-                styles.storeFilterChip,
-                onlyAlertStores && styles.storeFilterChipActive,
-              ]}
-              onPress={() => setOnlyAlertStores((current) => !current)}
-            >
-              <Text
-                style={[
-                  styles.storeFilterChipLabel,
-                  onlyAlertStores && styles.storeFilterChipLabelActive,
-                ]}
-              >
-                Solo con alerta de stock
-              </Text>
-            </Pressable>
+          <View style={styles.storeSearchRow}>
+            <TextInput
+              style={[styles.storeSearchInput, styles.storeSearchField]}
+              placeholder="Buscar tienda por nombre o ubicación"
+              placeholderTextColor="rgba(255,255,255,0.55)"
+              value={storeSearchQuery}
+              onChangeText={setStoreSearchQuery}
+              autoCorrect={false}
+              autoCapitalize="words"
+              returnKeyType="search"
+            />
           </View>
 
-          <View style={styles.storeSortRow}>
-            {[
-              { key: "name-asc" as const, label: "Nombre A-Z" },
-              { key: "value-desc" as const, label: "Valor (↓)" },
-              { key: "products-desc" as const, label: "Productos (↓)" },
-            ].map((option) => (
-              <Pressable
-                key={option.key}
-                style={[
-                  styles.storeSortChip,
-                  storeSortOption === option.key && styles.storeSortChipActive,
-                ]}
-                onPress={() => setStoreSortOption(option.key)}
+          {showAdvancedFilters ? (
+            <View style={styles.storeFilterRow}>
+              <Chip
+                variant={onlyAlertStores ? "primary" : "secondary"}
+                onPress={() => setOnlyAlertStores((current) => !current)}
               >
-                <Text
-                  style={[
-                    styles.storeSortChipLabel,
-                    storeSortOption === option.key &&
-                      styles.storeSortChipLabelActive,
-                  ]}
+                <Chip.Label>Solo con alerta de stock</Chip.Label>
+              </Chip>
+            </View>
+          ) : null}
+
+          {showAdvancedFilters ? (
+            <View style={styles.storeSortRow}>
+              {[
+                { key: "name-asc" as const, label: "Nombre A-Z" },
+                { key: "value-desc" as const, label: "Valor inventario" },
+                { key: "products-desc" as const, label: "Productos" },
+              ].map((option) => (
+                <Chip
+                  key={option.key}
+                  variant={
+                    storeSortOption === option.key ? "primary" : "secondary"
+                  }
+                  onPress={() => setStoreSortOption(option.key)}
                 >
-                  {option.label}
-                </Text>
-              </Pressable>
-            ))}
+                  <Chip.Label>{option.label}</Chip.Label>
+                </Chip>
+              ))}
+            </View>
+          ) : null}
+        </Surface>
+
+        <View style={styles.metricsRow}>
+          <View style={styles.metricCard}>
+            <View style={styles.metricHeader}>
+              <Ionicons name="home-outline" size={16} color="#8fa2ff" />
+              <Text style={styles.metricLabel}>Tiendas</Text>
+            </View>
+            <Text style={styles.metricValue}>{stores.length}</Text>
+          </View>
+          <View style={styles.metricCard}>
+            <View style={styles.metricHeader}>
+              <Ionicons name="cube-outline" size={16} color="#8fa2ff" />
+              <Text style={styles.metricLabel}>Productos</Text>
+            </View>
+            <Text style={styles.metricValue}>
+              {globalMetrics.totalProducts}
+            </Text>
+          </View>
+          <View style={styles.metricCard}>
+            <View style={styles.metricHeader}>
+              <Ionicons name="stats-chart-outline" size={16} color="#8fa2ff" />
+              <Text style={styles.metricLabel}>Stock total</Text>
+            </View>
+            <Text style={styles.metricValue}>{globalMetrics.totalStock}</Text>
+          </View>
+          <View style={styles.metricCard}>
+            <View style={styles.metricHeader}>
+              <Ionicons name="cash-outline" size={16} color="#8fa2ff" />
+              <Text style={styles.metricLabel}>Valor inventario</Text>
+            </View>
+            <Text style={styles.metricValueSmall}>
+              {formatCurrency(globalMetrics.inventoryValue)}
+            </Text>
           </View>
         </View>
 
@@ -460,9 +593,6 @@ export default function HomeScreen() {
 
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Tiendas activas</Text>
-          <Text style={styles.sectionSubtitle}>
-            Consulta disponibilidad, ofertas y bajo stock por tienda.
-          </Text>
         </View>
 
         <View style={styles.list}>
@@ -474,31 +604,10 @@ export default function HomeScreen() {
                     productCount={metrics.productCount}
                     inventoryValue={metrics.stockValue}
                     lowStockCount={metrics.lowStock}
+                    onEdit={() => handleEditStore(store)}
+                    onDelete={() => handleDeleteStore(store)}
+                    onReport={() => handleGenerateStoreReport(store)}
                   />
-                  <View style={styles.storeActions}>
-                    <Pressable
-                      style={styles.storeActionButton}
-                      onPress={() => handleEditStore(store)}
-                    >
-                      <Text style={styles.storeActionLabel}>Editar</Text>
-                    </Pressable>
-                    <Pressable
-                      style={[
-                        styles.storeActionButton,
-                        styles.storeDeleteButton,
-                      ]}
-                      onPress={() => handleDeleteStore(store)}
-                    >
-                      <Text
-                        style={[
-                          styles.storeActionLabel,
-                          styles.storeDeleteLabel,
-                        ]}
-                      >
-                        Eliminar
-                      </Text>
-                    </Pressable>
-                  </View>
                 </View>
               ))
             : null}
@@ -560,60 +669,69 @@ const styles = StyleSheet.create({
     gap: 24,
   },
   header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    gap: 16,
-    flexWrap: "wrap",
+    flexDirection: "column",
+    gap: 12,
   },
-  headerContent: {
-    flexShrink: 1,
-    gap: 6,
+  headerTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
   },
   heading: {
     fontSize: 28,
     fontWeight: "800",
     color: "#ffffff",
   },
-  subheading: {
-    fontSize: 15,
-    color: "rgba(255,255,255,0.7)",
-    marginTop: 6,
-    maxWidth: 260,
-  },
-  primaryButton: {
-    backgroundColor: "#5668ff",
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderRadius: 16,
-  },
-  headerButton: {
-    alignSelf: "flex-start",
+  iconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
   },
   headerActions: {
     flexDirection: "row",
-    gap: 12,
+    gap: 10,
     flexWrap: "wrap",
-    justifyContent: "flex-end",
+    justifyContent: "flex-start",
   },
-  primaryButtonLabel: {
+  headerActionButton: {
+    minWidth: 150,
+  },
+  actionButtonContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  actionButtonText: {
     color: "#ffffff",
     fontWeight: "700",
   },
-  secondaryButton: {
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderRadius: 16,
+  quickActionsSheet: {
+    backgroundColor: "rgba(16,22,43,0.95)",
+    borderRadius: 14,
+    padding: 10,
+    gap: 8,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  quickAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 10,
     backgroundColor: "rgba(255,255,255,0.04)",
   },
-  secondaryButtonLabel: {
-    color: "rgba(255,255,255,0.86)",
+  quickActionLabel: {
+    color: "#d8dcff",
     fontWeight: "600",
-  },
-  disabled: {
-    opacity: 0.6,
   },
   metricsRow: {
     flexDirection: "row",
@@ -629,6 +747,11 @@ const styles = StyleSheet.create({
     gap: 6,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.05)",
+  },
+  metricHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   metricLabel: {
     color: "rgba(255,255,255,0.6)",
@@ -649,21 +772,58 @@ const styles = StyleSheet.create({
   storeControls: {
     backgroundColor: "rgba(16,22,43,0.85)",
     borderRadius: 18,
-    paddingHorizontal: 18,
-    paddingVertical: 16,
-    gap: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 12,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
   },
-  storeSearchRow: {
+  filterHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  filterTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  filterTitle: {
+    color: "#e6e9ff",
+    fontWeight: "700",
+  },
+  filterClear: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  filterClearPressed: {
+    opacity: 0.9,
+  },
+  filterClearDisabled: {
+    opacity: 0.5,
+  },
+  filterClearText: {
+    color: "#b7c4ff",
+    fontWeight: "600",
+  },
+  filterClearTextDisabled: {
+    color: "rgba(183,196,255,0.5)",
+    fontWeight: "600",
+  },
+  storeSearchRow: {
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: 8,
   },
   storeSearchInput: {
     backgroundColor: "rgba(255,255,255,0.08)",
     color: "#ffffff",
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 12,
     borderRadius: 14,
     borderWidth: 1,
@@ -672,30 +832,14 @@ const styles = StyleSheet.create({
   storeSearchField: {
     flex: 1,
   },
-  storeClearButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.08)",
-  },
-  storeClearButtonDisabled: {
-    opacity: 0.5,
-  },
-  storeClearLabel: {
-    color: "#d8dcff",
-    fontWeight: "600",
-  },
-  storeClearLabelDisabled: {
-    color: "rgba(216,220,255,0.6)",
-  },
   storeFilterRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: 8,
   },
   storeFilterChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderRadius: 12,
     backgroundColor: "rgba(255,255,255,0.08)",
   },
@@ -714,25 +858,7 @@ const styles = StyleSheet.create({
   storeSortRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
-  },
-  storeSortChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.08)",
-  },
-  storeSortChipActive: {
-    backgroundColor: "rgba(86,104,255,0.24)",
-    borderWidth: 1,
-    borderColor: "rgba(86,104,255,0.75)",
-  },
-  storeSortChipLabel: {
-    color: "rgba(216,220,255,0.88)",
-    fontWeight: "600",
-  },
-  storeSortChipLabelActive: {
-    color: "#ffffff",
+    gap: 8,
   },
   sectionHeader: {
     gap: 4,
@@ -742,36 +868,12 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
   },
-  sectionSubtitle: {
-    color: "rgba(255,255,255,0.6)",
-  },
   list: {
     gap: 16,
     paddingBottom: 24,
   },
   storeBlock: {
     gap: 10,
-  },
-  storeActions: {
-    flexDirection: "row",
-    gap: 10,
-    paddingHorizontal: 12,
-  },
-  storeActionButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: "rgba(86,104,255,0.16)",
-  },
-  storeActionLabel: {
-    color: "#d8dcff",
-    fontWeight: "600",
-  },
-  storeDeleteButton: {
-    backgroundColor: "rgba(255,99,132,0.18)",
-  },
-  storeDeleteLabel: {
-    color: "#ff6384",
   },
   error: {
     color: "#ff6384",
