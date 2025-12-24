@@ -119,6 +119,8 @@ export default function StoreDetailScreen() {
   const [quickVisible, setQuickVisible] = useState(false);
   const [quickIndex, setQuickIndex] = useState(0);
   const [quickQty, setQuickQty] = useState("1");
+  const [quickPrice, setQuickPrice] = useState("");
+  const [quickPriceEdit, setQuickPriceEdit] = useState(false);
   const [quickBarcode, setQuickBarcode] = useState<{
     open: boolean;
     code: string | null;
@@ -258,24 +260,59 @@ export default function StoreDetailScreen() {
     return sorted;
   }, [filteredProducts, sortOption]);
 
+  // Productos ordenados por categoría (para vista rápida)
+  const quickProducts = useMemo(() => {
+    const result: typeof sortedProducts = [];
+
+    const orderedCategories = [...categories];
+    if (categoryOrder.length > 0) {
+      orderedCategories.sort((a, b) => {
+        const ia = categoryOrder.indexOf(a.id);
+        const ib = categoryOrder.indexOf(b.id);
+        return (
+          (ia === -1 ? Number.MAX_SAFE_INTEGER : ia) -
+          (ib === -1 ? Number.MAX_SAFE_INTEGER : ib)
+        );
+      });
+    }
+
+    orderedCategories.forEach((category) => {
+      const categoryProducts = sortedProducts.filter(
+        (p) => p.categoryId === category.id
+      );
+      result.push(...categoryProducts);
+    });
+
+    // Agregar productos sin categoría al final
+    const productsWithoutCategory = sortedProducts.filter(
+      (p) => !p.categoryId || !categories.find((c) => c.id === p.categoryId)
+    );
+    result.push(...productsWithoutCategory);
+
+    return result;
+  }, [sortedProducts, categories, categoryOrder]);
+
   const idToIndex = useMemo(() => {
     const map = new Map<string, number>();
-    sortedProducts.forEach((p, i) => map.set(p.id, i));
+    quickProducts.forEach((p, i) => map.set(p.id, i));
     return map;
-  }, [sortedProducts]);
+  }, [quickProducts]);
 
   const openQuickForProduct = useCallback(
     (productId: string) => {
       const idx = idToIndex.get(productId);
       if (idx === undefined) return;
+      const product = quickProducts[idx];
       setQuickIndex(idx);
       setQuickQty("1");
+      setQuickPrice(product?.price?.toString() ?? "");
+      setQuickPriceEdit(false);
       setQuickVisible(true);
     },
-    [idToIndex]
+    [idToIndex, quickProducts]
   );
 
-  const currentQuickProduct = sortedProducts[quickIndex];
+  const currentQuickProduct = quickProducts[quickIndex];
 
   const openCategorySummary = (entry: CategorySummaryEntry) => {
     setCategorySummaryState({ visible: true, summary: entry });
@@ -366,6 +403,14 @@ export default function StoreDetailScreen() {
     };
     loadOrder();
   }, [storeId]);
+
+  // Sincronizar precio cuando cambia el producto actual
+  useEffect(() => {
+    if (currentQuickProduct) {
+      setQuickPrice(currentQuickProduct.price?.toString() ?? "");
+      setQuickPriceEdit(false);
+    }
+  }, [currentQuickProduct]);
 
   const persistCategoryOrder = useCallback(
     async (order: string[]) => {
@@ -586,6 +631,40 @@ export default function StoreDetailScreen() {
     try {
       const categoryId = await resolveCategoryId(data.categoryName);
 
+      // Sincronizar imagen si el producto tiene código duplicado en otra tienda
+      let finalImageUrl = data.imageUrl;
+      let finalImageAsset = data.imageAsset;
+
+      if (!finalImageAsset && !finalImageUrl && data.barcodes) {
+        // Buscar productos con los mismos códigos en otras tiendas
+        const barcodesToMatch = [data.barcodes.upc, data.barcodes.box].filter(
+          (b) => b && b.trim()
+        );
+
+        if (barcodesToMatch.length > 0) {
+          const matchingProduct = allProducts.find((p) => {
+            if (p.storeId === storeId) return false; // Ignorar misma tienda
+            if (!p.barcodes) return false;
+
+            const productBarcodes = [p.barcodes.upc, p.barcodes.box].filter(
+              (b) => b && b.trim()
+            );
+
+            // Verificar si hay coincidencia de códigos
+            return barcodesToMatch.some((b) => productBarcodes.includes(b));
+          });
+
+          // Si encontramos un producto con el mismo código que tenga imagen, usarla
+          if (
+            matchingProduct &&
+            (matchingProduct.imageUrl || matchingProduct.imageAsset)
+          ) {
+            finalImageUrl = matchingProduct.imageUrl;
+            finalImageAsset = matchingProduct.imageAsset;
+          }
+        }
+      }
+
       if (productModalState.mode === "edit" && productModalState.product) {
         await updateProduct({
           productId: productModalState.product.id,
@@ -594,8 +673,8 @@ export default function StoreDetailScreen() {
             price: data.price,
             onlinePrice: data.onlinePrice,
             stock: data.stock,
-            imageUrl: data.imageUrl,
-            imageAsset: data.imageAsset,
+            imageUrl: finalImageUrl,
+            imageAsset: finalImageAsset,
             description: data.description,
             hasOffer: data.hasOffer,
             offerPrice: data.hasOffer ? data.offerPrice : undefined,
@@ -612,8 +691,8 @@ export default function StoreDetailScreen() {
           price: data.price,
           onlinePrice: data.onlinePrice,
           stock: data.stock,
-          imageUrl: data.imageUrl,
-          imageAsset: data.imageAsset,
+          imageUrl: finalImageUrl,
+          imageAsset: finalImageAsset,
           description: data.description,
           hasOffer: data.hasOffer,
           offerPrice: data.hasOffer ? data.offerPrice : undefined,
@@ -1471,38 +1550,6 @@ export default function StoreDetailScreen() {
           </View>
         ) : null}
 
-        {crossStoreSummary.length > 0 ? (
-          <View style={styles.analyticsSection}>
-            <Text style={styles.sectionTitle}>Cruces con otras tiendas</Text>
-            <Text style={styles.analyticsSubtitle}>
-              Coincidencias de stock y oportunidades de traslado.
-            </Text>
-            <View style={styles.crossStoreList}>
-              {crossStoreSummary.slice(0, 3).map((entry) => (
-                <View key={entry.store.id} style={styles.crossStoreCard}>
-                  <Text style={styles.crossStoreTitle}>{entry.store.name}</Text>
-                  <Text style={styles.crossStoreMeta}>
-                    Coincidencias: {entry.overlapCount}
-                  </Text>
-                  <Text style={styles.crossStoreMeta}>
-                    Stock combinado: {entry.totalStock}
-                  </Text>
-                  {entry.bestPrice !== null ? (
-                    <Text style={styles.crossStoreMeta}>
-                      Mejor precio: {formatCurrency(entry.bestPrice)}
-                    </Text>
-                  ) : null}
-                  {entry.offerMatches > 0 ? (
-                    <Text style={styles.crossStoreHighlight}>
-                      Ofertas activas: {entry.offerMatches}
-                    </Text>
-                  ) : null}
-                </View>
-              ))}
-            </View>
-          </View>
-        ) : null}
-
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         {groupedEntries.length === 0 &&
@@ -1624,7 +1671,7 @@ export default function StoreDetailScreen() {
                         {currentQuickProduct.name}
                       </Text>
                       <Text style={styles.quickCounter}>
-                        {quickIndex + 1} / {sortedProducts.length}
+                        {quickIndex + 1} / {quickProducts.length}
                       </Text>
                     </View>
 
@@ -1717,6 +1764,75 @@ export default function StoreDetailScreen() {
                         <Ionicons name="arrow-down" size={16} color="#0f1320" />
                         <Text style={styles.quickPrimaryBtnLabel}>Restar</Text>
                       </Pressable>
+                    </View>
+
+                    <View style={styles.quickPriceRow}>
+                      {!quickPriceEdit ? (
+                        <View style={styles.quickPriceDisplay}>
+                          <Text style={styles.quickPriceLabel}>Precio:</Text>
+                          <Text style={styles.quickPriceValue}>
+                            {formatCurrency(currentQuickProduct.price)}
+                          </Text>
+                          <Pressable
+                            style={styles.quickEditPriceBtn}
+                            onPress={() => setQuickPriceEdit(true)}
+                          >
+                            <Ionicons
+                              name="pencil-outline"
+                              size={14}
+                              color="#ffffff"
+                            />
+                          </Pressable>
+                        </View>
+                      ) : (
+                        <View style={styles.quickPriceEditRow}>
+                          <TextInput
+                            value={quickPrice}
+                            onChangeText={setQuickPrice}
+                            placeholder="0.00"
+                            placeholderTextColor="#9aa3c7"
+                            style={styles.quickPriceInput}
+                            keyboardType="decimal-pad"
+                          />
+                          <Pressable
+                            style={[
+                              styles.quickSecondaryBtn,
+                              styles.quickPriceActionBtn,
+                            ]}
+                            onPress={async () => {
+                              const newPrice = Number(quickPrice) || 0;
+                              if (newPrice > 0) {
+                                try {
+                                  await updateProduct(currentQuickProduct.id, {
+                                    ...currentQuickProduct,
+                                    price: newPrice,
+                                  });
+                                  setQuickPrice("");
+                                  setQuickPriceEdit(false);
+                                } catch {}
+                              }
+                            }}
+                          >
+                            <Ionicons
+                              name="checkmark"
+                              size={16}
+                              color="#9aa4ff"
+                            />
+                          </Pressable>
+                          <Pressable
+                            style={[
+                              styles.quickSecondaryBtn,
+                              styles.quickPriceActionBtn,
+                            ]}
+                            onPress={() => {
+                              setQuickPrice("");
+                              setQuickPriceEdit(false);
+                            }}
+                          >
+                            <Ionicons name="close" size={16} color="#ff99b2" />
+                          </Pressable>
+                        </View>
+                      )}
                     </View>
 
                     <View style={styles.quickCodesRow}>
@@ -2023,6 +2139,7 @@ export default function StoreDetailScreen() {
         onSelectProduct={(product) => {
           openProductDetail(product);
         }}
+        categoryOrder={categoryOrder}
       />
     </SafeAreaView>
   );
@@ -2496,6 +2613,61 @@ const styles = StyleSheet.create({
   quickSecondaryLabel: {
     color: "#9aa4ff",
     fontWeight: "700",
+  },
+  quickPriceRow: {
+    marginVertical: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  quickPriceDisplay: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  quickPriceLabel: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  quickPriceValue: {
+    color: "#d8dcff",
+    fontSize: 14,
+    fontWeight: "700",
+    flex: 1,
+    textAlign: "right",
+  },
+  quickEditPriceBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: "rgba(216,220,255,0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  quickPriceEditRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  quickPriceInput: {
+    flex: 1,
+    height: 40,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    color: "#ffffff",
+    fontWeight: "600",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.15)",
+  },
+  quickPriceActionBtn: {
+    width: 40,
+    flex: 0,
   },
   quickNavRow: {
     flexDirection: "row",

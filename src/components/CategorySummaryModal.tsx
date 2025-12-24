@@ -20,6 +20,7 @@ interface CategorySummaryModalProps {
   } | null;
   onClose: () => void;
   onSelectProduct: (product: Product) => void;
+  categoryOrder?: string[];
 }
 
 export const CategorySummaryModal = ({
@@ -27,6 +28,7 @@ export const CategorySummaryModal = ({
   summary,
   onClose,
   onSelectProduct,
+  categoryOrder,
 }: CategorySummaryModalProps) => {
   if (!summary) {
     return null;

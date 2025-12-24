@@ -803,6 +803,7 @@ export const buildStoreSalesReportText = (payload: {
   lines.push("");
   const totalSold = payload.sections
     .flatMap((s) => s.items)
+    .filter((item) => item.quantity > 0)
     .reduce((acc, it) => acc + it.quantity, 0);
   lines.push(`Ventas realizadas: ${payload.salesCount ?? totalSold}`);
   lines.push("");
@@ -812,9 +813,21 @@ export const buildStoreSalesReportText = (payload: {
     const section = payload.sections.find((s) => s.title === title);
     lines.push(`${title}:`);
     if (section && section.items.length) {
-      section.items.forEach((item) => {
-        lines.push(`- ${item.name} (x${item.quantity})`);
-      });
+      const vendidos = section.items.filter((item) => item.quantity > 0);
+      const agotados = section.items.filter((item) => item.quantity === 0);
+
+      if (vendidos.length > 0) {
+        vendidos.forEach((item) => {
+          lines.push(`- ${item.name} (x${item.quantity})`);
+        });
+      }
+
+      if (agotados.length > 0) {
+        lines.push("  Agotados en categoría:");
+        agotados.forEach((item) => {
+          lines.push(`  - ${item.name} (agotado)`);
+        });
+      }
     }
     lines.push("");
   });

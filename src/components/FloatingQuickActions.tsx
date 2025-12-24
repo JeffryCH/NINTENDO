@@ -4,6 +4,7 @@ import {
   Clipboard,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -162,6 +163,19 @@ export const FloatingQuickActions = ({
         const section = resolveSectionForCategory(product.categoryId);
         buckets[section].push({ name: product.name, quantity: qty });
       });
+
+      // Agregar productos agotados seleccionados a sus categorías
+      Object.entries(selectedOutOfStock)
+        .filter(([, selected]) => selected)
+        .forEach(([productId]) => {
+          const product =
+            outOfStockProducts.find((p) => p.id === productId) ||
+            products.find((p) => p.id === productId);
+          if (product) {
+            const section = resolveSectionForCategory(product.categoryId);
+            buckets[section].push({ name: product.name, quantity: 0 }); // quantity 0 indica que es agotado
+          }
+        });
 
       extraItems.forEach((item) => {
         const qty = Math.max(1, Number.parseInt(item.quantity, 10) || 1);
@@ -771,7 +785,7 @@ export const FloatingQuickActions = ({
             </View>
 
             {salesStep === 0 && (
-              <View style={styles.stepBlock}>
+              <ScrollView style={styles.stepBlock}>
                 <Text style={styles.optLabel}>Selecciona items vendidos</Text>
                 {availableProducts.length === 0 ? (
                   <Text style={styles.emptyText}>
@@ -857,7 +871,7 @@ export const FloatingQuickActions = ({
                     );
                   })
                 )}
-              </View>
+              </ScrollView>
             )}
 
             {salesStep === 1 && (
@@ -1140,15 +1154,12 @@ export const FloatingQuickActions = ({
         <View style={styles.overlay}>
           <View style={styles.optionsSheet}>
             <Text style={styles.optionsTitle}>Texto del reporte</Text>
-            <View style={[styles.optRow, { maxHeight: 320 }]}>
-              <TextInput
-                style={[styles.optInput, { height: 320 }]}
-                value={textContent}
-                editable={false}
-                multiline
-                selectTextOnFocus
-              />
-            </View>
+            <ScrollView
+              style={styles.textPreviewScroll}
+              nestedScrollEnabled
+            >
+              <Text style={styles.textPreviewContent}>{textContent}</Text>
+            </ScrollView>
             <View style={styles.optActions}>
               <Pressable
                 style={styles.optCancel}
@@ -1244,6 +1255,21 @@ const styles = StyleSheet.create({
     fontSize: 16,
     marginBottom: 8,
   },
+  textPreviewScroll: {
+    maxHeight: 320,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#2a2f49",
+    borderRadius: 8,
+    padding: 10,
+    backgroundColor: "rgba(255,255,255,0.02)",
+  },
+  textPreviewContent: {
+    color: "#e9ecff",
+    fontSize: 12,
+    lineHeight: 18,
+    fontFamily: "monospace",
+  },
   optRow: { marginBottom: 10 },
   optLabel: { color: "#cbd1f3", fontSize: 12, marginBottom: 4 },
   optInput: {
@@ -1317,6 +1343,8 @@ const styles = StyleSheet.create({
     padding: 10,
     gap: 6,
     marginBottom: 10,
+    maxHeight: 300,
+  },
   },
   selectRow: {
     flexDirection: "row",

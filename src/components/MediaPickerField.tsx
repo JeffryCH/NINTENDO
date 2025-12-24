@@ -69,7 +69,7 @@ export const MediaPickerField = ({
         setPending(source);
         const pickerOptions: ImagePicker.ImagePickerOptions = {
           mediaTypes: ["images"],
-          allowsEditing: true,
+          allowsEditing: false,
           quality: 0.8,
         };
         const result =
@@ -183,7 +183,7 @@ const styles = StyleSheet.create({
   preview: {
     width: "100%",
     height: "100%",
-    resizeMode: "cover",
+    resizeMode: "contain",
   },
   placeholder: {
     flex: 1,
